@@ -12,6 +12,9 @@ thing is, the LADSPA plugin in question is nowhere to be found
 `--af lavfi` doesn't deliver convincing results with 5.1+ channel
 layouts.
 
+An alternative way to use HRTF without reverting these commits is to use
+the OpenAL audio output, and configure libopenal to use HRTF.
+
 --------------
 
 ![http://mpv.io/](https://raw.githubusercontent.com/mpv-player/mpv.io/master/source/images/mpv-logo-128.png)
