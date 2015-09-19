@@ -82,6 +82,9 @@ static const struct af_info *const filter_list[] = {
     &af_info_sinesuppress,
     &af_info_karaoke,
     &af_info_scaletempo,
+#if HAVE_LIBBS2B
+    &af_info_bs2b,
+#endif
 #if HAVE_LIBAVFILTER
     &af_info_lavfi,
 #endif
