@@ -101,7 +101,6 @@ def build(ctx):
         ( "audio/decode/dec_audio.c" ),
         ( "audio/filter/af.c" ),
         ( "audio/filter/af_bs2b.c",              "libbs2b" ),
-        ( "audio/filter/af_center.c" ),
         ( "audio/filter/af_channels.c" ),
         ( "audio/filter/af_delay.c" ),
         ( "audio/filter/af_drc.c" ),
