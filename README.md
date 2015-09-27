@@ -1,3 +1,22 @@
+This is my fork of mpv reverting the following commits which removed
+audio filters useful to me:
+
+  * [091bfa3abf2f28b37fa12cca6b4c248c31d27965](https://github.com/mpv-player/mpv/commit/091bfa3abf2f28b37fa12cca6b4c248c31d27965)
+  * [d04d2380e35ba016e3816ab5d7c282997df74168](https://github.com/mpv-player/mpv/commit/d04d2380e35ba016e3816ab5d7c282997df74168)
+
+These changes (which are unlikely to be reverted, even partially) piss
+me off to no end, mostly because of the removal of the HRTF filter for
+which @wm4 says there is a LADSPA plugin replacement available -- sad
+thing is, the LADSPA plugin in question is nowhere to be found
+(ladspa.org is gone) and Bauer stereophonic-to-binaural DSP (bs2b) via
+`--af lavfi` doesn't deliver convincing results with 5.1+ channel
+layouts.
+
+An alternative way to use HRTF without reverting these commits is to use
+the OpenAL audio output, and configure libopenal to use HRTF.
+
+--------------
+
 ![http://mpv.io/](https://raw.githubusercontent.com/mpv-player/mpv.io/master/source/images/mpv-logo-128.png)
 
 ## mpv

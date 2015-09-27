@@ -35,12 +35,12 @@ struct mpv_global;
 // Number of channels
 #define AF_NCH MP_NUM_CHANNELS
 
+// Flags for af->filter()
+#define AF_FILTER_FLAG_EOF 1
+
 // Flags used for defining the behavior of an audio filter
 #define AF_FLAGS_REENTRANT      0x00000000
 #define AF_FLAGS_NOT_REENTRANT  0x00000001
-
-// Flags for af->filter()
-#define AF_FILTER_FLAG_EOF 1
 
 /* Audio filter information not specific for current instance, but for
    a specific filter */
