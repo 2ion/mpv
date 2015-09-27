@@ -38,6 +38,8 @@ struct mpv_global;
 // Flags for af->filter()
 #define AF_FILTER_FLAG_EOF 1
 
+#define AF_FLAGS_NOT_REENTRANT  0x00000001
+
 /* Audio filter information not specific for current instance, but for
    a specific filter */
 struct af_info {
