@@ -173,6 +173,10 @@ main_dependencies = [
         'func': check_true,
         'deps_any': ['stdatomic', 'atomic-builtins', 'sync-builtins'],
     }, {
+        'name': 'c11-tls',
+        'desc': 'C11 TLS support',
+        'func': check_statement('stddef.h', 'static _Thread_local int x = 0'),
+    }, {
         'name': 'librt',
         'desc': 'linking with -lrt',
         'deps': [ 'pthreads' ],
@@ -613,10 +617,9 @@ video_output_features = [
     } , {
         'name': '--egl-x11',
         'desc': 'OpenGL X11 EGL Backend',
-        'deps': [ 'x11' ],
+        'deps': [ 'x11', 'c11-tls' ],
         'groups': [ 'gl' ],
         'func': check_pkg_config('egl', 'gl'),
-        'default': 'disable',
     } , {
         'name': '--gl-wayland',
         'desc': 'OpenGL Wayland Backend',
@@ -656,6 +659,11 @@ video_output_features = [
         'name': '--vaapi-glx',
         'desc': 'VAAPI GLX',
         'deps': [ 'vaapi', 'gl-x11' ],
+        'func': check_true,
+    }, {
+        'name': '--vaapi-x-egl',
+        'desc': 'VAAPI EGL on X11',
+        'deps': [ 'vaapi', 'egl-x11' ],
         'func': check_true,
     }, {
         'name': '--caca',
@@ -764,6 +772,11 @@ hwaccel_features = [
         'desc': 'libavcodec DXVA2 hwaccel',
         'deps': [ 'win32' ],
         'func': check_headers('libavcodec/dxva2.h', use='libav'),
+    }, {
+        'name': 'sse4-intrinsics',
+        'desc': 'GCC SSE4 intrinsics for GPU memcpy',
+        'deps_any': [ 'dxva2-hwaccel', 'vaapi-hwaccel' ],
+        'func': check_cc(fragment=load_fragment('sse.c')),
     }
 ]
 
@@ -867,7 +880,7 @@ def options(opt):
     group.add_option('--lua',
         type    = 'string',
         dest    = 'LUA_VER',
-        help    = "select Lua package which should be autodetected. Choices: 51 51deb 51fbsd 52 52deb 52fbsd luajit")
+        help    = "select Lua package which should be autodetected. Choices: 51 51deb 51fbsd 52 52deb 52arch 52fbsd luajit")
 
 @conf
 def is_optimization(ctx):

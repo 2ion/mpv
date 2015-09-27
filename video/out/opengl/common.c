@@ -291,9 +291,17 @@ static const struct gl_functions gl_functions[] = {
     // These don't exist - they are for the sake of mpv internals, and libmpv
     // interaction (see libmpv/opengl_cb.h).
     {
+        .extension = "GL_MP_MPGetNativeDisplay",
+        .functions = (const struct gl_function[]) {
+            DEF_FN(MPGetNativeDisplay),
+            {0}
+        },
+    },
+    // Same, but using the old name.
+    {
         .extension = "GL_MP_D3D_interfaces",
         .functions = (const struct gl_function[]) {
-            DEF_FN(MPGetD3DInterface),
+            DEF_FN_NAME(MPGetNativeDisplay, "glMPGetD3DInterface"),
             {0}
         },
     },
@@ -508,11 +516,11 @@ static const struct backend backends[] = {
 #if HAVE_GL_WAYLAND
     {"wayland", mpgl_set_backend_wayland},
 #endif
-#if HAVE_GL_X11
-    {.driver = &mpgl_driver_x11},
-#endif
 #if HAVE_EGL_X11
     {.driver = &mpgl_driver_x11egl},
+#endif
+#if HAVE_GL_X11
+    {.driver = &mpgl_driver_x11},
 #endif
 };
 
