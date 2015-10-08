@@ -26,7 +26,6 @@
 
 #include <va/va_drmcommon.h>
 
-#include "video/out/x11_common.h"
 #include "hwdec.h"
 #include "video/vaapi.h"
 #include "video/img_fourcc.h"
@@ -47,11 +46,48 @@ typedef void *EGLImageKHR;
 #define EGL_DMA_BUF_PLANE0_PITCH_EXT      0x3274
 #endif
 
+#if HAVE_VAAPI_X11
+#include <va/va_x11.h>
+
+static VADisplay *create_x11_va_display(GL *gl)
+{
+    Display *x11 = gl->MPGetNativeDisplay("x11");
+    return x11 ? vaGetDisplay(x11) : NULL;
+}
+#endif
+
+#if HAVE_VAAPI_WAYLAND
+#include <va/va_wayland.h>
+
+static VADisplay *create_wayland_va_display(GL *gl)
+{
+    struct wl_display *wl = gl->MPGetNativeDisplay("wl");
+    return wl ? vaGetDisplayWl(wl) : NULL;
+}
+#endif
+
+static VADisplay *create_native_va_display(GL *gl)
+{
+    if (!gl->MPGetNativeDisplay)
+        return NULL;
+    VADisplay *display = NULL;
+#if HAVE_VAAPI_X11
+    display = create_x11_va_display(gl);
+    if (display)
+        return display;
+#endif
+#if HAVE_VAAPI_WAYLAND
+    display = create_wayland_va_display(gl);
+    if (display)
+        return display;
+#endif
+    return display;
+}
+
 struct priv {
     struct mp_log *log;
     struct mp_vaapi_ctx *ctx;
     VADisplay *display;
-    Display *xdisplay;
     GLuint gl_textures[4];
     EGLImageKHR images[4];
     VAImage current_image;
@@ -152,10 +188,6 @@ static int create(struct gl_hwdec *hw)
     if (!eglGetCurrentDisplay())
         return -1;
 
-    p->xdisplay =
-        hw->gl->MPGetNativeDisplay ? hw->gl->MPGetNativeDisplay("x11") : NULL;
-    if (!p->xdisplay)
-        return -1;
     if (!strstr(gl->extensions, "EXT_image_dma_buf_import") ||
         !strstr(gl->extensions, "EGL_KHR_image_base") ||
         !strstr(gl->extensions, "GL_OES_EGL_image") ||
@@ -173,7 +205,7 @@ static int create(struct gl_hwdec *hw)
         !p->EGLImageTargetTexture2DOES)
         return -1;
 
-    p->display = vaGetDisplay(p->xdisplay);
+    p->display = create_native_va_display(gl);
     if (!p->display)
         return -1;
 

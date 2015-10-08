@@ -29,6 +29,7 @@
 #include "common/encode.h"
 #include "options/options.h"
 #include "common/common.h"
+#include "osdep/timer.h"
 
 #include "audio/mixer.h"
 #include "audio/audio.h"
@@ -153,6 +154,7 @@ void reset_audio_state(struct MPContext *mpctx)
         mp_audio_buffer_clear(mpctx->ao_buffer);
     mpctx->audio_status = mpctx->d_audio ? STATUS_SYNCING : STATUS_EOF;
     mpctx->delay = 0;
+    mpctx->audio_stat_start = 0;
 }
 
 void uninit_audio_out(struct MPContext *mpctx)
@@ -260,11 +262,15 @@ void reinit_audio_chain(struct MPContext *mpctx)
     }
 
     if (!mpctx->ao) {
+        bool spdif_fallback = af_fmt_is_spdif(afs->output.format) &&
+                              mpctx->d_audio->spdif_passthrough;
+        bool ao_null_fallback = opts->ao_null_fallback && !spdif_fallback;
+
         mp_chmap_remove_useless_channels(&afs->output.channels,
                                          &opts->audio_output_channels);
         mp_audio_set_channels(&afs->output, &afs->output.channels);
 
-        mpctx->ao = ao_init_best(mpctx->global, mpctx->input,
+        mpctx->ao = ao_init_best(mpctx->global, ao_null_fallback, mpctx->input,
                                  mpctx->encode_lavc_ctx, afs->output.rate,
                                  afs->output.format, afs->output.channels);
 
@@ -283,10 +289,9 @@ void reinit_audio_chain(struct MPContext *mpctx)
 
         if (!mpctx->ao) {
             // If spdif was used, try to fallback to PCM.
-            if (af_fmt_is_spdif(afs->output.format) &&
-                mpctx->d_audio->spdif_passthrough)
-            {
+            if (spdif_fallback) {
                 mpctx->d_audio->spdif_passthrough = false;
+                mpctx->d_audio->spdif_failed = true;
                 if (!audio_init_best_codec(mpctx->d_audio))
                     goto init_error;
                 reset_audio_state(mpctx);
@@ -400,9 +405,27 @@ static int write_to_ao(struct MPContext *mpctx, struct mp_audio *data, int flags
     if (played > 0) {
         mpctx->shown_aframes += played;
         mpctx->delay += played / real_samplerate;
+        mpctx->written_audio += played / (double)out_format.rate;
         return played;
     }
     return 0;
+}
+
+static void dump_audio_stats(struct MPContext *mpctx)
+{
+    if (!mp_msg_test(mpctx->log, MSGL_STATS))
+        return;
+    if (mpctx->audio_status != STATUS_PLAYING || !mpctx->ao)
+        return;
+
+    double delay = ao_get_delay(mpctx->ao);
+    if (!mpctx->audio_stat_start) {
+        mpctx->audio_stat_start = mp_time_us();
+        mpctx->written_audio = delay;
+    }
+    double current_audio = mpctx->written_audio - delay;
+    double current_time = (mp_time_us() - mpctx->audio_stat_start) / 1e6;
+    MP_STATS(mpctx, "value %f ao-dev", current_audio - current_time);
 }
 
 // Return the number of samples that must be skipped or prepended to reach the
@@ -468,11 +491,23 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     struct MPOpts *opts = mpctx->opts;
     struct dec_audio *d_audio = mpctx->d_audio;
 
+    dump_audio_stats(mpctx);
+
     if (mpctx->ao && ao_query_and_reset_events(mpctx->ao, AO_EVENT_RELOAD)) {
         ao_reset(mpctx->ao);
         uninit_audio_out(mpctx);
-        if (d_audio)
+        if (d_audio) {
+            if (mpctx->d_audio->spdif_failed) {
+                mpctx->d_audio->spdif_failed = false;
+                mpctx->d_audio->spdif_passthrough = true;
+                if (!audio_init_best_codec(mpctx->d_audio)) {
+                    MP_ERR(mpctx, "Error reinitializing audio.\n");
+                    error_on_track(mpctx, mpctx->current_track[0][STREAM_AUDIO]);
+                    return;
+                }
+            }
             mpctx->audio_status = STATUS_SYNCING;
+        }
     }
 
     if (!d_audio)
@@ -616,6 +651,8 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     int played = write_to_ao(mpctx, &data, playflags);
     assert(played >= 0 && played <= data.samples);
     mp_audio_buffer_skip(mpctx->ao_buffer, played);
+
+    dump_audio_stats(mpctx);
 
     mpctx->audio_status = STATUS_PLAYING;
     if (audio_eof && !playsize) {
