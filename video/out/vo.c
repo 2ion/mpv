@@ -21,6 +21,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include <math.h>
 
 #ifndef __MINGW32__
 #include <unistd.h>
@@ -47,6 +48,7 @@
 #include "osdep/io.h"
 #include "osdep/threads.h"
 
+extern const struct vo_driver video_out_x11;
 extern const struct vo_driver video_out_vdpau;
 extern const struct vo_driver video_out_xv;
 extern const struct vo_driver video_out_opengl;
@@ -88,8 +90,11 @@ const struct vo_driver *const video_out_drivers[] =
 #if HAVE_SDL2
     &video_out_sdl,
 #endif
-#if HAVE_VAAPI
+#if HAVE_VAAPI_X11
     &video_out_vaapi,
+#endif
+#if HAVE_X11
+    &video_out_x11,
 #endif
     &video_out_null,
     // should not be auto-selected
@@ -355,8 +360,7 @@ static void run_reconfig(void *p)
     void **pp = p;
     struct vo *vo = pp[0];
     struct mp_image_params *params = pp[1];
-    int flags = *(int *)pp[2];
-    int *ret = pp[3];
+    int *ret = pp[2];
 
     struct vo_internal *in = vo->in;
 
@@ -366,7 +370,7 @@ static void run_reconfig(void *p)
     talloc_free(vo->params);
     vo->params = talloc_memdup(vo, params, sizeof(*params));
 
-    *ret = vo->driver->reconfig(vo, vo->params, flags);
+    *ret = vo->driver->reconfig(vo, vo->params);
     vo->config_ok = *ret >= 0;
     if (vo->config_ok) {
         check_vo_caps(vo);
@@ -384,10 +388,10 @@ static void run_reconfig(void *p)
     update_display_fps(vo);
 }
 
-int vo_reconfig(struct vo *vo, struct mp_image_params *params, int flags)
+int vo_reconfig(struct vo *vo, struct mp_image_params *params)
 {
     int ret;
-    void *p[] = {vo, params, &flags, &ret};
+    void *p[] = {vo, params, &ret};
     mp_dispatch_run(vo->in->dispatch, run_reconfig, p);
     return ret;
 }
@@ -747,6 +751,10 @@ static bool render_frame(struct vo *vo)
         if (in->current_frame && in->current_frame->display_synced &&
             continuous && in->vsync_interval_approx > in->vsync_interval * 3 / 2)
             in->missed_count += 1;
+
+        double diff = (in->vsync_interval - in->vsync_interval_approx) / 1e6;
+        if (fabs(diff) < 0.150)
+            MP_STATS(vo, "value %f vsync-diff", diff);
     }
 
     if (!in->dropped_frame) {
