@@ -505,6 +505,8 @@ bool ca_change_physical_format_sync(struct ao *ao, AudioStreamID stream,
     err = CA_GET(stream, kAudioStreamPropertyPhysicalFormat, &prev_format);
     CHECK_CA_ERROR("can't get current physical format");
 
+    ca_print_asbd(ao, "format in use before switching:", &prev_format);
+
     /* Install the callback. */
     AudioObjectPropertyAddress p_addr = {
         .mSelector = kAudioStreamPropertyPhysicalFormat,
@@ -523,7 +525,7 @@ bool ca_change_physical_format_sync(struct ao *ao, AudioStreamID stream,
 
     /* The AudioStreamSetProperty is not only asynchronous,
      * it is also not Atomic, in its behaviour. */
-    struct timespec timeout = mp_rel_time_to_timespec(0.5);
+    struct timespec timeout = mp_rel_time_to_timespec(2.0);
     AudioStreamBasicDescription actual_format = {0};
     while (1) {
         err = CA_GET(stream, kAudioStreamPropertyPhysicalFormat, &actual_format);

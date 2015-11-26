@@ -39,7 +39,8 @@ typedef void* GLeglImageOES;
 typedef void *EGLImageKHR;
 #endif
 
-#ifndef EGL_LINUX_DRM_FOURCC_EXT
+#ifndef EGL_LINUX_DMA_BUF_EXT
+#define EGL_LINUX_DMA_BUF_EXT             0x3270
 #define EGL_LINUX_DRM_FOURCC_EXT          0x3271
 #define EGL_DMA_BUF_PLANE0_FD_EXT         0x3272
 #define EGL_DMA_BUF_PLANE0_OFFSET_EXT     0x3273
@@ -215,7 +216,7 @@ static int create(struct gl_hwdec *hw)
         return -1;
     }
 
-    if (hw->reject_emulated && va_guess_if_emulated(p->ctx)) {
+    if (hw->probing && va_guess_if_emulated(p->ctx)) {
         destroy(hw);
         return -1;
     }
