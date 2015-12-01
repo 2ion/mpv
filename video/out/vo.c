@@ -143,6 +143,7 @@ struct vo_internal {
     int64_t vsync_interval;
     int64_t *vsync_samples;
     int num_vsync_samples;
+    int64_t num_total_vsync_samples;
     int64_t prev_vsync;
     int64_t base_vsync;
     int drop_point;
@@ -324,8 +325,8 @@ static void reset_vsync_timings(struct vo *vo)
 {
     struct vo_internal *in = vo->in;
     in->num_vsync_samples = 0;
+    in->num_total_vsync_samples = 0;
     in->drop_point = 0;
-    in->prev_vsync = 0;
     in->estimated_vsync_interval = 0;
     in->estimated_vsync_jitter = -1;
     in->base_vsync = 0;
@@ -343,62 +344,55 @@ static double vsync_stddef(struct vo *vo, int64_t ref_vsync)
     return sqrt(jitter / in->num_vsync_samples);
 }
 
-// Always called locked.
-static void update_vsync_timing_after_swap(struct vo *vo)
+#define MAX_VSYNC_SAMPLES 200
+
+// Check if we should switch to measured average display FPS if it seems
+// "better" then the system-reported one. (Note that small differences are
+// handled as drift instead.)
+static void check_estimated_display_fps(struct vo *vo)
 {
     struct vo_internal *in = vo->in;
 
-    if (!in->expecting_vsync || !in->prev_vsync) {
-        reset_vsync_timings(vo);
-        return;
-    }
-
-    int64_t now = mp_time_us();
-    int max_samples = 200;
-    if (in->num_vsync_samples >= max_samples)
-        in->num_vsync_samples -= 1;
-    MP_TARRAY_INSERT_AT(in, in->vsync_samples, in->num_vsync_samples, 0,
-                        now - in->prev_vsync);
-    in->drop_point = MPMIN(in->drop_point + 1, in->num_vsync_samples);
-    if (in->base_vsync) {
-        in->base_vsync += in->vsync_interval;
-    } else {
-        in->base_vsync = now;
-    }
-    in->prev_vsync = now;
-
-    double avg = 0;
-    for (int n = 0; n < in->num_vsync_samples; n++)
-        avg += in->vsync_samples[n];
-    in->estimated_vsync_interval = avg / in->num_vsync_samples;
-    in->estimated_vsync_jitter =
-        vsync_stddef(vo, in->vsync_interval) / in->vsync_interval;
-
-    // Switch to assumed display FPS if it seems "better". (Note that small
-    // differences are handled as drift instead.)
-    if (in->num_vsync_samples == max_samples &&
+    bool use_estimated = false;
+    if (in->num_total_vsync_samples >= MAX_VSYNC_SAMPLES * 2 &&
         fabs((in->nominal_vsync_interval - in->estimated_vsync_interval))
             >= 0.01 * in->nominal_vsync_interval &&
         in->estimated_vsync_interval <= 1e6 / 20.0 &&
         in->estimated_vsync_interval >= 1e6 / 99.0)
     {
+        for (int n = 0; n < in->num_vsync_samples; n++) {
+            if (fabs(in->vsync_samples[n] - in->estimated_vsync_interval)
+                >= in->estimated_vsync_interval / 4)
+                goto done;
+        }
         double mjitter = vsync_stddef(vo, in->estimated_vsync_interval);
         double njitter = vsync_stddef(vo, in->nominal_vsync_interval);
-        if (mjitter * 1.01 < njitter) {
-            if (in->vsync_interval == in->nominal_vsync_interval) {
-                MP_WARN(vo, "Reported display FPS seems incorrect.\n"
-                            "Assuming a value closer to %.3f Hz.\n",
-                            1e6 / in->estimated_vsync_interval);
-            }
-            in->vsync_interval = in->estimated_vsync_interval;
+        if (mjitter * 1.01 < njitter)
+            use_estimated = true;
+        done: ;
+    }
+    if (use_estimated == (in->vsync_interval == in->nominal_vsync_interval)) {
+        if (use_estimated) {
+            MP_WARN(vo, "Reported display FPS seems incorrect.\n"
+                        "Assuming a value closer to %.3f Hz.\n",
+                        1e6 / in->estimated_vsync_interval);
+        } else {
+            MP_WARN(vo, "Switching back to assuming %.3f Hz.\n",
+                    1e6 / in->nominal_vsync_interval);
         }
     }
+    in->vsync_interval = use_estimated ? (int64_t)in->estimated_vsync_interval
+                                       : in->nominal_vsync_interval;
+}
 
-    MP_STATS(vo, "value %f jitter", in->estimated_vsync_jitter);
-    MP_STATS(vo, "value %f vsync-diff", in->vsync_samples[0] / 1e6);
+// Attempt to detect vsyncs delayed/skipped by the driver. This tries to deal
+// with strong jitter too, because some drivers have crap vsync timing.
+static void vsync_skip_detection(struct vo *vo)
+{
+    struct vo_internal *in = vo->in;
 
     int window = 4;
-    int64_t t_r = now, t_e = in->base_vsync, diff = 0, desync_early = 0;
+    int64_t t_r = in->prev_vsync, t_e = in->base_vsync, diff = 0, desync_early = 0;
     for (int n = 0; n < in->drop_point; n++) {
         diff += t_r - t_e;
         t_r -= in->vsync_samples[n];
@@ -413,15 +407,53 @@ static void update_vsync_timing_after_swap(struct vo *vo)
         // Assume a drop. An underflow can technically speaking not be a drop
         // (it's up to the driver what this is supposed to mean), but no reason
         // to treat it differently.
-        in->base_vsync = now;
+        in->base_vsync = in->prev_vsync;
         in->delayed_count += 1;
         in->drop_point = 0;
         MP_STATS(vo, "vo-delayed");
-        desync = 0;
     }
-    // Smooth out drift.
     if (in->drop_point > 10)
-        in->base_vsync += desync / 10;
+        in->base_vsync += desync / 10;  // smooth out drift
+}
+
+// Always called locked.
+static void update_vsync_timing_after_swap(struct vo *vo)
+{
+    struct vo_internal *in = vo->in;
+
+    int64_t now = mp_time_us();
+
+    if (!in->expecting_vsync) {
+        in->prev_vsync = now; // for normal system-time framedrop
+        reset_vsync_timings(vo);
+        return;
+    }
+
+    if (in->num_vsync_samples >= MAX_VSYNC_SAMPLES)
+        in->num_vsync_samples -= 1;
+    MP_TARRAY_INSERT_AT(in, in->vsync_samples, in->num_vsync_samples, 0,
+                        now - in->prev_vsync);
+    in->drop_point = MPMIN(in->drop_point + 1, in->num_vsync_samples);
+    in->num_total_vsync_samples += 1;
+    if (in->base_vsync) {
+        in->base_vsync += in->vsync_interval;
+    } else {
+        in->base_vsync = now;
+    }
+    in->prev_vsync = now;
+
+    double avg = 0;
+    for (int n = 0; n < in->num_vsync_samples; n++)
+        avg += in->vsync_samples[n];
+    in->estimated_vsync_interval = avg / in->num_vsync_samples;
+    in->estimated_vsync_jitter =
+        vsync_stddef(vo, in->vsync_interval) / in->vsync_interval;
+
+    check_estimated_display_fps(vo);
+    vsync_skip_detection(vo);
+
+    MP_STATS(vo, "value %f jitter", in->estimated_vsync_jitter);
+    MP_STATS(vo, "value %f vsync-diff", in->vsync_samples[0] / 1e6);
 }
 
 // to be called from VO thread only
@@ -733,39 +765,38 @@ static bool render_frame(struct vo *vo)
         frame->duration = -1;
     }
 
+    int64_t now = mp_time_us();
     int64_t pts = frame->pts;
     int64_t duration = frame->duration;
     int64_t end_time = pts + duration;
-
-    frame->vsync_interval = in->vsync_interval;
 
     // Time at which we should flip_page on the VO.
     int64_t target = frame->display_synced ? 0 : pts - in->flip_queue_offset;
 
     // "normal" strict drop threshold.
-    in->dropped_frame = duration >= 0 && end_time < mp_time_us();
+    in->dropped_frame = duration >= 0 && end_time < now;
 
     in->dropped_frame &= !frame->display_synced;
     in->dropped_frame &= !(vo->driver->caps & VO_CAP_FRAMEDROP);
     in->dropped_frame &= (vo->global->opts->frame_dropping & 1);
     // Even if we're hopelessly behind, rather degrade to 10 FPS playback,
     // instead of just freezing the display forever.
-    in->dropped_frame &= mp_time_us() - in->prev_vsync < 100 * 1000;
+    in->dropped_frame &= now - in->prev_vsync < 100 * 1000;
     in->dropped_frame &= in->hasframe_rendered;
 
     // Setup parameters for the next time this frame is drawn. ("frame" is the
     // frame currently drawn, while in->current_frame is the potentially next.)
     in->current_frame->repeat = true;
     if (frame->display_synced) {
-        in->current_frame->vsync_offset += in->vsync_interval;
+        in->current_frame->vsync_offset += in->current_frame->vsync_interval;
         in->dropped_frame |= in->current_frame->num_vsyncs < 1;
     }
     if (in->current_frame->num_vsyncs > 0)
         in->current_frame->num_vsyncs -= 1;
 
     in->expecting_vsync = in->current_frame->display_synced && !in->paused;
-    if (in->expecting_vsync && !in->prev_vsync)
-        in->prev_vsync = mp_time_us();
+    if (in->expecting_vsync && !in->num_vsync_samples) // first DS frame in a row
+        in->prev_vsync = now;
 
     if (in->dropped_frame) {
         in->drop_count += 1;

@@ -949,7 +949,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
 
     mpctx->display_sync_active = false;
 
-    if (!VS_IS_DISP(mode))
+    if (!VS_IS_DISP(mode) || mpctx->display_sync_broken)
         return;
     bool resample = mode == VS_DISP_RESAMPLE || mode == VS_DISP_RESAMPLE_VDROP ||
                     mode == VS_DISP_RESAMPLE_NONE;
@@ -992,7 +992,6 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     int num_vsyncs = MPMAX(lrint(ratio), 0);
     double prev_error = mpctx->display_sync_error;
     mpctx->display_sync_error += frame_duration - num_vsyncs * vsync;
-    frame->vsync_offset = mpctx->display_sync_error * 1e6;
 
     MP_DBG(mpctx, "s=%f vsyncs=%d dur=%f ratio=%f err=%.20f (%f/%f)\n",
            mpctx->speed_factor_v, num_vsyncs, adjusted_duration, ratio,
@@ -1046,6 +1045,9 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     // A bad guess, only needed when reverting to audio sync.
     mpctx->time_frame = time_left;
 
+    frame->vsync_interval = vsync;
+    frame->vsync_offset = -prev_error;
+    frame->ideal_frame_duration = frame_duration;
     frame->num_vsyncs = num_vsyncs;
     frame->display_synced = true;
 
