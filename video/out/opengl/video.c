@@ -49,9 +49,6 @@
 #include "video/out/dither.h"
 #include "video/out/vo.h"
 
-// Pixel width of 1D lookup textures.
-#define LOOKUP_TEXTURE_SIZE 256
-
 // Maximal number of passes that prescaler can be applied.
 #define MAX_PRESCALE_PASSES 5
 
@@ -166,7 +163,7 @@ struct gl_video {
     struct mp_imgfmt_desc image_desc;
     int plane_count;
 
-    bool is_yuv, is_rgb, is_packed_yuv;
+    bool is_yuv, is_packed_yuv;
     bool has_alpha;
     char color_swizzle[5];
 
@@ -348,6 +345,7 @@ const struct gl_video_opts gl_video_opts_def = {
         {{"mitchell",   .params={NAN, NAN}}, {.params = {NAN, NAN}},
          .clamp = 1, }, // tscale
     },
+    .scaler_lut_size = 6,
     .alpha_mode = 2,
     .background = {0, 0, 0, 255},
     .gamma = 1.0f,
@@ -371,6 +369,7 @@ const struct gl_video_opts gl_video_opts_hq_def = {
         {{"mitchell",   .params={NAN, NAN}}, {.params = {NAN, NAN}},
          .clamp = 1, }, // tscale
     },
+    .scaler_lut_size = 6,
     .alpha_mode = 2,
     .background = {0, 0, 0, 255},
     .gamma = 1.0f,
@@ -412,6 +411,7 @@ const struct m_sub_options gl_video_conf = {
         SCALER_OPTS("dscale", 1),
         SCALER_OPTS("cscale", 2),
         SCALER_OPTS("tscale", 3),
+        OPT_INTRANGE("scaler-lut-size", scaler_lut_size, 0, 4, 10),
         OPT_FLAG("scaler-resizes-only", scaler_resizes_only, 0),
         OPT_FLAG("linear-scaling", linear_scaling, 0),
         OPT_FLAG("correct-downscaling", correct_downscaling, 0),
@@ -459,8 +459,11 @@ const struct m_sub_options gl_video_conf = {
         OPT_FLOAT("sharpen", unsharp, 0),
         OPT_CHOICE("prescale", prescale, 0,
                    ({"none", 0},
-                    {"superxbr", 1},
-                    {"nnedi3", 2})),
+                    {"superxbr", 1}
+#if HAVE_NNEDI
+                    , {"nnedi3", 2}
+#endif
+                    )),
         OPT_INTRANGE("prescale-passes",
                      prescale_passes, 0, 1, MAX_PRESCALE_PASSES),
         OPT_FLOATRANGE("prescale-downscaling-threshold",
@@ -1078,14 +1081,16 @@ static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
 
     gl->BindTexture(target, scaler->gl_lut);
 
-    float *weights = talloc_array(NULL, float, LOOKUP_TEXTURE_SIZE * size);
-    mp_compute_lut(scaler->kernel, LOOKUP_TEXTURE_SIZE, weights);
+    scaler->lut_size = 1 << p->opts.scaler_lut_size;
+
+    float *weights = talloc_array(NULL, float, scaler->lut_size * size);
+    mp_compute_lut(scaler->kernel, scaler->lut_size, weights);
 
     if (target == GL_TEXTURE_1D) {
-        gl->TexImage1D(target, 0, fmt->internal_format, LOOKUP_TEXTURE_SIZE,
+        gl->TexImage1D(target, 0, fmt->internal_format, scaler->lut_size,
                        0, fmt->format, GL_FLOAT, weights);
     } else {
-        gl->TexImage2D(target, 0, fmt->internal_format, width, LOOKUP_TEXTURE_SIZE,
+        gl->TexImage2D(target, 0, fmt->internal_format, width, scaler->lut_size,
                        0, fmt->format, GL_FLOAT, weights);
     }
 
@@ -1322,9 +1327,9 @@ static void pass_read_video(struct gl_video *p)
     struct gl_transform chromafix;
     pass_set_image_textures(p, &p->image, &chromafix);
 
-    int in_bits = p->image_desc.component_bits,
-        tx_bits = (in_bits + 7) & ~7;
-    float tex_mul = ((1 << tx_bits) - 1.0) / ((1 << in_bits) - 1.0);
+    float tex_mul = 1 / mp_get_csp_mul(p->image_params.colorspace,
+                                       p->image_desc.component_bits,
+                                       p->image_desc.component_full_bits);
 
     struct src_tex prescaled_tex;
     struct gl_transform offset = {{{0}}};
@@ -1460,7 +1465,7 @@ static void pass_convert_yuv(struct gl_video *p)
     struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
     cparams.gray = p->is_yuv && !p->is_packed_yuv && p->plane_count == 1;
     cparams.input_bits = p->image_desc.component_bits;
-    cparams.texture_bits = (cparams.input_bits + 7) & ~7;
+    cparams.texture_bits = p->image_desc.component_full_bits;
     mp_csp_set_image_params(&cparams, &p->image_params);
     mp_csp_copy_equalizer_values(&cparams, &p->video_eq);
     p->user_gamma = 1.0 / (cparams.gamma * p->opts.gamma);
@@ -1479,24 +1484,18 @@ static void pass_convert_yuv(struct gl_video *p)
         GLSL(color.rgb = pow(color.rgb, vec3(2.6));)
     }
 
-    // Something already took care of expansion
+    // Something already took care of expansion - disable it.
     if (p->use_normalized_range)
-        cparams.input_bits = cparams.texture_bits;
+        cparams.input_bits = cparams.texture_bits = 0;
 
-    // Conversion from Y'CbCr or other linear spaces to RGB
-    if (!p->is_rgb) {
-        struct mp_cmat m = {{{0}}};
-        if (p->image_desc.flags & MP_IMGFLAG_XYZ) {
-            struct mp_csp_primaries csp = mp_get_csp_primaries(p->image_params.primaries);
-            mp_get_xyz2rgb_coeffs(&cparams, csp, MP_INTENT_RELATIVE_COLORIMETRIC, &m);
-        } else {
-            mp_get_yuv2rgb_coeffs(&cparams, &m);
-        }
-        gl_sc_uniform_mat3(sc, "colormatrix", true, &m.m[0][0]);
-        gl_sc_uniform_vec3(sc, "colormatrix_c", m.c);
+    // Conversion to RGB. For RGB itself, this still applies e.g. brightness
+    // and contrast controls, or expansion of e.g. LSB-packed 10 bit data.
+    struct mp_cmat m = {{{0}}};
+    mp_get_csp_matrix(&cparams, &m);
+    gl_sc_uniform_mat3(sc, "colormatrix", true, &m.m[0][0]);
+    gl_sc_uniform_vec3(sc, "colormatrix_c", m.c);
 
-        GLSL(color.rgb = mat3(colormatrix) * color.rgb + colormatrix_c;)
-    }
+    GLSL(color.rgb = mat3(colormatrix) * color.rgb + colormatrix_c;)
 
     if (p->image_params.colorspace == MP_CSP_BT_2020_C) {
         // Conversion for C'rcY'cC'bc via the BT.2020 CL system:
@@ -1737,9 +1736,16 @@ static void pass_dither(struct gl_video *p)
                 p->last_dither_matrix_size = size;
             }
 
+            const struct fmt_entry *fmt = find_tex_format(gl, 2, 1);
             tex_size = size;
-            tex_iformat = gl_float16_formats[0].internal_format;
-            tex_format = gl_float16_formats[0].format;
+            // Prefer R16 texture since they provide higher precision.
+            if (fmt->internal_format) {
+                tex_iformat = fmt->internal_format;
+                tex_format = fmt->format;
+            } else {
+                tex_iformat = gl_float16_formats[0].internal_format;
+                tex_format = gl_float16_formats[0].format;
+            }
             tex_type = GL_FLOAT;
             tex_data = p->last_dither_matrix;
         } else {
@@ -2483,14 +2489,18 @@ static void check_gl_features(struct gl_video *p)
     if (p->opts.prescale == 2) {
         if (p->opts.nnedi3_opts->upload == NNEDI3_UPLOAD_UBO) {
             // Check features for uniform buffer objects.
-            if (!p->gl->BindBufferBase || !p->gl->GetUniformBlockIndex) {
-                MP_WARN(p, "Disabling NNEDI3 (OpenGL 3.1 required).\n");
+            if (!gl->BindBufferBase || !gl->GetUniformBlockIndex) {
+                MP_WARN(p, "Disabling NNEDI3 (%s required).\n",
+                        gl->es ? "OpenGL ES 3.0" : "OpenGL 3.1");
                 p->opts.prescale = 0;
             }
         } else if (p->opts.nnedi3_opts->upload == NNEDI3_UPLOAD_SHADER) {
             // Check features for hard coding approach.
-            if (p->gl->glsl_version < 330) {
-                MP_WARN(p, "Disabling NNEDI3 (OpenGL 3.3 required).\n");
+            if ((!gl->es && gl->glsl_version < 330) ||
+                (gl->es && gl->glsl_version < 300))
+            {
+                MP_WARN(p, "Disabling NNEDI3 (%s required).\n",
+                        gl->es ? "OpenGL ES 3.0" : "OpenGL 3.3");
                 p->opts.prescale = 0;
             }
         }
@@ -2712,7 +2722,6 @@ supported:
     }
 
     init->is_yuv = desc.flags & MP_IMGFLAG_YUV;
-    init->is_rgb = desc.flags & MP_IMGFLAG_RGB;
     init->plane_count = desc.num_planes;
     init->image_desc = desc;
 

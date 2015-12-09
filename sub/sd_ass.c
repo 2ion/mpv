@@ -29,6 +29,7 @@
 #include "options/options.h"
 #include "common/common.h"
 #include "common/msg.h"
+#include "demux/stheader.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
 #include "dec_sub.h"
@@ -46,6 +47,7 @@ struct sd_ass_priv {
     char last_text[500];
     struct mp_image_params video_params;
     struct mp_image_params last_params;
+    double sub_speed;
 };
 
 static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts);
@@ -116,6 +118,19 @@ static int init(struct sd *sd)
     mp_ass_add_default_styles(ctx->ass_track, opts);
 
     pthread_mutex_unlock(sd->ass_lock);
+
+    ctx->sub_speed = 1.0;
+
+    if (sd->video_fps && sd->sh && sd->sh->sub->frame_based > 0) {
+        MP_VERBOSE(sd, "Frame based format, dummy FPS: %f, video FPS: %f\n",
+                   sd->sh->sub->frame_based, sd->video_fps);
+        ctx->sub_speed *= sd->sh->sub->frame_based / sd->video_fps;
+    }
+
+    if (opts->sub_fps && sd->video_fps)
+        ctx->sub_speed *= opts->sub_fps / sd->video_fps;
+
+    ctx->sub_speed *= opts->sub_speed;
 
     return 0;
 }
@@ -243,6 +258,83 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     ass_set_line_spacing(priv, set_line_spacing);
 }
 
+static bool has_overrides(char *s)
+{
+    if (!s)
+        return false;
+    return strstr(s, "\\pos") || strstr(s, "\\move") || strstr(s, "\\clip") ||
+           strstr(s, "\\iclip") || strstr(s, "\\org") || strstr(s, "\\p");
+}
+
+#define END(ev) ((ev)->Start + (ev)->Duration)
+
+static long long find_timestamp(struct sd *sd, double pts)
+{
+    struct sd_ass_priv *priv = sd->priv;
+    if (pts == MP_NOPTS_VALUE)
+        return 0;
+
+    pts /= priv->sub_speed;
+
+    long long ts = llrint(pts * 1000);
+
+    if (!sd->opts->sub_fix_timing)
+        return ts;
+
+    // Try to fix small gaps and overlaps.
+    ASS_Track *track = priv->ass_track;
+    int threshold = SUB_GAP_THRESHOLD * 1000;
+    int keep = SUB_GAP_KEEP * 1000;
+
+    // Find the "current" event.
+    ASS_Event *ev[2] = {0};
+    int n_ev = 0;
+    for (int n = 0; n < track->n_events; n++) {
+        ASS_Event *event = &track->events[n];
+        if (ts >= event->Start - threshold && ts <= END(event) + threshold) {
+            if (n_ev >= MP_ARRAY_SIZE(ev))
+                return ts; // multiple overlaps - give up (probably complex subs)
+            ev[n_ev++] = event;
+        }
+    }
+
+    if (n_ev != 2)
+        return ts;
+
+    // Simple/minor heuristic against destroying typesetting.
+    if (ev[0]->Style != ev[1]->Style || has_overrides(ev[0]->Text) ||
+        has_overrides(ev[1]->Text))
+        return ts;
+
+    // Sort by start timestamps.
+    if (ev[0]->Start > ev[1]->Start)
+        MPSWAP(ASS_Event*, ev[0], ev[1]);
+
+    // We want to fix partial overlaps only.
+    if (END(ev[0]) >= END(ev[1]))
+        return ts;
+
+    if (ev[0]->Duration < keep || ev[1]->Duration < keep)
+        return ts;
+
+    // Gap between the events -> move ts to show the end of the first event.
+    if (ts >= END(ev[0]) && ts < ev[1]->Start && END(ev[0]) < ev[1]->Start &&
+        END(ev[0]) + threshold >= ev[1]->Start)
+        return END(ev[0]) - 1;
+
+    // Overlap -> move ts to the (exclusive) end of the first event.
+    // Relies on the fact that the ASS_Renderer has no overlap registered, even
+    // if there is one. This happens to work because we never render the
+    // overlapped state, and libass never resolves a collision.
+    if (ts >= ev[1]->Start && ts <= END(ev[0]) && END(ev[0]) > ev[1]->Start &&
+        END(ev[0]) <= ev[1]->Start + threshold)
+        return END(ev[0]);
+
+    return ts;
+}
+
+#undef END
+
 static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
                         struct sub_bitmaps *res)
 {
@@ -280,7 +372,8 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
     }
     if (no_ass)
         fill_plaintext(sd, pts);
-    mp_ass_render_frame(renderer, track, pts * 1000 + .5, &ctx->parts, res);
+    long long ts = find_timestamp(sd, pts);
+    mp_ass_render_frame(renderer, track, ts, &ctx->parts, res);
     talloc_steal(ctx, ctx->parts);
 
     if (!converted)
@@ -368,7 +461,7 @@ static char *get_text(struct sd *sd, double pts)
 
     if (pts == MP_NOPTS_VALUE)
         return NULL;
-    long long ipts = pts * 1000 + 0.5;
+    long long ipts = find_timestamp(sd, pts);
 
     struct buf b = {ctx->last_text, sizeof(ctx->last_text) - 1};
 
@@ -461,10 +554,11 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
     switch (cmd) {
     case SD_CTRL_SUB_STEP: {
         double *a = arg;
-        long long res = ass_step_sub(ctx->ass_track, a[0] * 1000 + 0.5, a[1]);
+        long long ts = llrint(a[0] * (1000.0 / ctx->sub_speed));
+        long long res = ass_step_sub(ctx->ass_track, ts, a[1]);
         if (!res)
             return false;
-        a[0] = res / 1000.0;
+        a[0] = res / (1000.0 / ctx->sub_speed);
         return true;
     }
     case SD_CTRL_SET_VIDEO_PARAMS:
@@ -573,20 +667,16 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
     struct mp_csp_params vs_params = MP_CSP_PARAMS_DEFAULTS;
     vs_params.colorspace = csp;
     vs_params.levels_in = levels;
-    vs_params.int_bits_in = 8;
-    vs_params.int_bits_out = 8;
     struct mp_cmat vs_yuv2rgb, vs_rgb2yuv;
-    mp_get_yuv2rgb_coeffs(&vs_params, &vs_yuv2rgb);
-    mp_invert_yuv2rgb(&vs_rgb2yuv, &vs_yuv2rgb);
+    mp_get_csp_matrix(&vs_params, &vs_yuv2rgb);
+    mp_invert_cmat(&vs_rgb2yuv, &vs_yuv2rgb);
 
     // Proper conversion to RGB
     struct mp_csp_params rgb_params = MP_CSP_PARAMS_DEFAULTS;
     rgb_params.colorspace = params.colorspace;
     rgb_params.levels_in = params.colorlevels;
-    rgb_params.int_bits_in = 8;
-    rgb_params.int_bits_out = 8;
     struct mp_cmat vs2rgb;
-    mp_get_yuv2rgb_coeffs(&rgb_params, &vs2rgb);
+    mp_get_csp_matrix(&rgb_params, &vs2rgb);
 
     for (int n = 0; n < parts->num_parts; n++) {
         struct sub_bitmap *sb = &parts->parts[n];
@@ -595,9 +685,9 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
         int g = (color >> 16u) & 0xff;
         int b = (color >>  8u) & 0xff;
         int a = 0xff - (color & 0xff);
-        int c[3] = {r, g, b};
-        mp_map_int_color(&vs_rgb2yuv, 8, c);
-        mp_map_int_color(&vs2rgb, 8, c);
-        sb->libass.color = MP_ASS_RGBA(c[0], c[1], c[2], a);
+        int rgb[3] = {r, g, b}, yuv[3];
+        mp_map_fixp_color(&vs_rgb2yuv, 8, rgb, 8, yuv);
+        mp_map_fixp_color(&vs2rgb, 8, yuv, 8, rgb);
+        sb->libass.color = MP_ASS_RGBA(rgb[0], rgb[1], rgb[2], a);
     }
 }

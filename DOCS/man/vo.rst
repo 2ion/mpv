@@ -431,6 +431,15 @@ Available video output drivers are:
             Scale parameter (t). Increasing this makes the window wider.
             Defaults to 1.
 
+    ``scaler-lut-size=<4..10>``
+        Set the size of the lookup texture for scaler kernels (default: 6).
+        The actual size of the texture is ``2^N`` for an option value of ``N``.
+        So the lookup texture with the default setting uses 64 samples.
+
+        All weights are bilinearly interpolated from those samples, so
+        increasing the size of lookup table might improve the accuracy of
+        scaler.
+
     ``scaler-resizes-only``
         Disable the scaler if the video image is not resized. In that case,
         ``bilinear`` is used instead whatever is set with ``scale``. Bilinear
@@ -618,11 +627,11 @@ Available video output drivers are:
 
         ``ubo``
             Upload these weights via uniform buffer objects. This is the
-            default. (requires OpenGL 3.1)
+            default. (requires OpenGL 3.1 / GLES 3.0)
 
         ``shader``
             Hard code all the weights into the shader source code. (requires
-            OpenGL 3.3)
+            OpenGL 3.3 / GLES 3.0)
 
 
     ``pre-shaders=<files>``, ``post-shaders=<files>``, ``scale-shader=<file>``

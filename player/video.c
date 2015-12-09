@@ -289,7 +289,7 @@ int reinit_video_chain(struct MPContext *mpctx)
     }
 
 #if HAVE_ENCODING
-    if (mpctx->encode_lavc_ctx && d_video)
+    if (mpctx->encode_lavc_ctx)
         encode_lavc_set_video_fps(mpctx->encode_lavc_ctx, d_video->fps);
 #endif
 
@@ -579,9 +579,9 @@ static void handle_new_frame(struct MPContext *mpctx)
             // Assume a discontinuity.
             MP_WARN(mpctx, "Invalid video timestamp: %f -> %f\n",
                     mpctx->video_pts, pts);
-            frame_time = 0;
-            if (mpctx->d_audio)
+            if (mpctx->d_audio && fabs(frame_time) > 1.0)
                 mpctx->audio_status = STATUS_SYNCING;
+            frame_time = 0;
         }
     }
     mpctx->video_next_pts = pts;
@@ -964,9 +964,9 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     if (vsync <= 0)
         return;
 
-    double adjusted_duration = mpctx->past_frames[0].approx_duration;
+    double adjusted_duration = MPMAX(0, mpctx->past_frames[0].approx_duration);
     adjusted_duration /= opts->playback_speed;
-    if (adjusted_duration <= 0.001 || adjusted_duration > 0.5)
+    if (adjusted_duration > 0.5)
         return;
 
     mpctx->speed_factor_v = 1.0;

@@ -1334,8 +1334,8 @@ Subtitles
 
 ``--sub-speed=<0.1-10.0>``
     Multiply the subtitle event timestamps with the given value. Can be used
-    to fix the playback speed for frame-based subtitle formats. Works for
-    external text subtitles only.
+    to fix the playback speed for frame-based subtitle formats. Affects text
+    subtitles only.
 
     .. admonition:: Example
 
@@ -1583,17 +1583,17 @@ Subtitles
     This mode doesn't take language or fallback codepage.
 
 ``--sub-fix-timing``, ``--no-sub-fix-timing``
-    By default, external text subtitles are preprocessed to remove minor gaps
-    or overlaps between subtitles (if the difference is smaller than 200 ms,
-    the gap or overlap is removed). This does not affect image subtitles,
-    subtitles muxed with audio/video, or subtitles in the ASS format.
+    By default, subtitle timing is adjusted to remove minor gaps or overlaps
+    between subtitles (if the difference is smaller than 210 ms, the gap or
+    overlap is removed).
 
 ``--sub-forced-only``
     Display only forced subtitles for the DVD subtitle stream selected by e.g.
     ``--slang``.
 
 ``--sub-fps=<rate>``
-    Specify the framerate of the subtitle file (default: video fps).
+    Specify the framerate of the subtitle file (default: video fps). Affects
+    text subtitles only.
 
     .. note::
 
@@ -3549,6 +3549,10 @@ Miscellaneous
     in verbose mode, i.e. ``--v``. In general we can't print errors, because
     other options such as e.g. user agent are not available with all protocols,
     and printing errors for unknown options would end up being too noisy.)
+
+``--vo-mmcss-profile=<name>``
+    (Windows only.)
+    Set the MMCSS profile for the video renderer thread (default: ``Playback``).
 
 ``--priority=<prio>``
     (Windows only.)
