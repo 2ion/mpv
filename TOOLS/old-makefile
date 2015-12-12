@@ -44,8 +44,6 @@ SOURCES-$(LIBBS2B)              += audio/filter/af_bs2b.c
 
 SOURCES-$(LIBSMBCLIENT)         += stream/stream_smb.c
 
-SOURCES-$(PVR)                  += stream/stream_pvr.c
-
 SOURCES-$(TV)                   += stream/stream_tv.c stream/tv.c \
                                    stream/frequencies.c stream/tvi_dummy.c \
                                    demux/demux_tv.c
@@ -175,7 +173,6 @@ SOURCES = audio/audio.c \
           demux/demux_playlist.c \
           demux/demux_rar.c \
           demux/demux_raw.c \
-          demux/demux_subreader.c \
           demux/ebml.c \
           demux/packet.c \
           demux/timeline.c \

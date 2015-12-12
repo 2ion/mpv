@@ -671,6 +671,14 @@ video_output_features = [
         'func': check_statement('windows.h', 'wglCreateContext(0)',
                                 lib='opengl32')
     } , {
+        'name': '--gl-dxinterop',
+        'desc': 'OpenGL/DirectX Interop Backend',
+        'deps': [ 'gl-win32' ],
+        'groups': [ 'gl' ],
+        'func': compose_checks(
+            check_statement(['GL/gl.h', 'GL/wglext.h'], 'int i = WGL_ACCESS_WRITE_DISCARD_NV'),
+            check_statement('d3d9.h', 'IDirect3D9Ex *d'))
+    } , {
         'name': '--egl-angle',
         'desc': 'OpenGL Win32 ANGLE Backend',
         'deps_any': [ 'os-win32', 'os-cygwin' ],
@@ -830,11 +838,6 @@ radio_and_tv_features = [
         'desc': 'libv4l2 support',
         'func': check_pkg_config('libv4l2'),
         'deps': [ 'tv-v4l2' ],
-    }, {
-        'name': '--pvr',
-        'desc': 'Video4Linux2 MPEG PVR interface',
-        'deps': [ 'tv' ],
-        'func': check_cc(fragment=load_fragment('pvr.c')),
     }, {
         'name': '--audio-input',
         'desc': 'audio input support',
