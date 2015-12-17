@@ -40,6 +40,7 @@
 #include "common/tags.h"
 #include "common/av_common.h"
 #include "misc/bstr.h"
+#include "misc/charset_conv.h"
 
 #include "stream/stream.h"
 #include "demux.h"
@@ -108,6 +109,7 @@ struct format_hack {
     bool no_stream : 1;         // do not wrap struct stream as AVIOContext
     bool use_stream_ids : 1;    // export the native stream IDs
     bool fully_read : 1;        // set demuxer.fully_read flag
+    bool detect_charset : 1;    // format is a small text file, possibly not UTF8
     bool image_format : 1;      // expected to contain exactly 1 frame
     // Do not confuse player's position estimation (position is into external
     // segment, with e.g. HLS, player knows about the playlist main file only).
@@ -115,8 +117,8 @@ struct format_hack {
 };
 
 #define BLACKLIST(fmt) {fmt, .ignore = true}
-#define TEXTSUB(fmt) {fmt, .fully_read = true}
-#define IMAGEFMT(fmt) {fmt, .image_format = true}
+#define TEXTSUB(fmt) {fmt, .fully_read = true, .detect_charset = true}
+#define TEXTSUB_UTF8(fmt) {fmt, .fully_read = true}
 
 static const struct format_hack format_hacks[] = {
     // for webradios
@@ -135,10 +137,13 @@ static const struct format_hack format_hacks[] = {
     {"h264", .if_flags = AVFMT_NOTIMESTAMPS },
     {"hevc", .if_flags = AVFMT_NOTIMESTAMPS },
 
-    TEXTSUB("aqtitle"), TEXTSUB("ass"), TEXTSUB("jacosub"), TEXTSUB("microdvd"),
+    TEXTSUB("aqtitle"), TEXTSUB("jacosub"), TEXTSUB("microdvd"),
     TEXTSUB("mpl2"), TEXTSUB("mpsub"), TEXTSUB("pjs"), TEXTSUB("realtext"),
     TEXTSUB("sami"), TEXTSUB("srt"), TEXTSUB("stl"), TEXTSUB("subviewer"),
-    TEXTSUB("subviewer1"), TEXTSUB("vplayer"), TEXTSUB("webvtt"),
+    TEXTSUB("subviewer1"), TEXTSUB("vplayer"),
+
+    TEXTSUB_UTF8("webvtt"),
+    TEXTSUB_UTF8("ass"),
 
     // Useless non-sense, sometimes breaks MLP2 subreader.c fallback
     BLACKLIST("tty"),
@@ -148,7 +153,7 @@ static const struct format_hack format_hacks[] = {
     // Useless, does not work with custom streams.
     BLACKLIST("image2"),
     // Image demuxers ("<name>_pipe" is detected explicitly)
-    IMAGEFMT("image2pipe"),
+    {"image2pipe", .image_format = true},
     {0}
 };
 
@@ -165,6 +170,7 @@ typedef struct lavf_priv {
     int cur_program;
     char *mime_type;
     bool merge_track_metadata;
+    char *file_charset;
 } lavf_priv_t;
 
 // At least mp4 has name="mov,mp4,m4a,3gp,3g2,mj2", so we split the name
@@ -253,6 +259,23 @@ static void list_formats(struct demuxer *demuxer)
         MP_INFO(demuxer, "%15s : %s\n", fmt->name, fmt->long_name);
 }
 
+static void detect_charset(struct demuxer *demuxer)
+{
+    lavf_priv_t *priv = demuxer->priv;
+    char *cp = demuxer->opts->sub_cp;
+    if (mp_charset_requires_guess(cp)) {
+        bstr data = stream_peek(demuxer->stream, STREAM_MAX_BUFFER_SIZE);
+        cp = (char *)mp_charset_guess(priv, demuxer->log, data, cp, 0);
+        MP_VERBOSE(demuxer, "Detected charset: %s\n", cp ? cp : "(unknown)");
+    }
+    if (cp && !mp_charset_is_utf8(cp))
+        MP_INFO(demuxer, "Using subtitle charset: %s\n", cp);
+    // libavformat transparently converts UTF-16 to UTF-8
+    if (mp_charset_is_utf16(priv->file_charset))
+        cp = NULL;
+    priv->file_charset = cp;
+}
+
 static char *remove_prefix(char *s, const char *const *prefixes)
 {
     for (int n = 0; prefixes[n]; n++) {
@@ -271,11 +294,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     struct MPOpts *opts = demuxer->opts;
     struct demux_lavf_opts *lavfdopts = opts->demux_lavf;
     struct stream *s = demuxer->stream;
-    lavf_priv_t *priv;
-
-    assert(!demuxer->priv);
-    demuxer->priv = talloc_zero(NULL, lavf_priv_t);
-    priv = demuxer->priv;
+    lavf_priv_t *priv = demuxer->priv;
 
     priv->filename = remove_prefix(s->url, prefixes);
 
@@ -392,6 +411,9 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     priv->avif_flags = priv->avif->flags | priv->format_hack.if_flags;
 
     demuxer->filetype = priv->avif->name;
+
+    if (priv->format_hack.detect_charset)
+        detect_charset(demuxer);
 
     return 0;
 }
@@ -613,8 +635,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
             }
         }
 
-        if (matches_avinputformat_name(priv, "ass"))
-            sh_sub->is_utf8 = true;
+        sh_sub->charset = priv->file_charset;
 
         break;
     }
@@ -707,13 +728,10 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     AVFormatContext *avfc;
     AVDictionaryEntry *t = NULL;
     float analyze_duration = 0;
-    int i;
+    lavf_priv_t *priv = talloc_zero(NULL, lavf_priv_t);
+    demuxer->priv = priv;
 
     if (lavf_check_file(demuxer, check) < 0)
-        return -1;
-
-    lavf_priv_t *priv = demuxer->priv;
-    if (!priv)
         return -1;
 
     avfc = avformat_alloc_context();
@@ -815,7 +833,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     MP_VERBOSE(demuxer, "avformat_find_stream_info() finished after %"PRId64
                " bytes.\n", stream_tell(demuxer->stream));
 
-    for (i = 0; i < avfc->nb_chapters; i++) {
+    for (int i = 0; i < avfc->nb_chapters; i++) {
         AVChapter *c = avfc->chapters[i];
         t = av_dict_get(c->metadata, "title", NULL, 0);
         int index = demuxer_add_chapter(demuxer, t ? t->value : "",
