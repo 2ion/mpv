@@ -137,7 +137,6 @@ struct gl_video {
     struct gl_video_opts opts;
     bool gl_debug;
 
-    int depth_g;
     int texture_16bit_depth;    // actual bits available in 16 bit textures
 
     struct gl_shader_cache *sc;
@@ -374,7 +373,6 @@ const struct gl_video_opts gl_video_opts_hq_def = {
     .background = {0, 0, 0, 255},
     .gamma = 1.0f,
     .blend_subs = 0,
-    .pbo = 1,
     .deband = 1,
     .prescale_passes = 1,
     .prescale_downscaling_threshold = 2.0f,
@@ -1492,6 +1490,14 @@ static void pass_convert_yuv(struct gl_video *p)
 
     GLSL(color.rgb = mat3(colormatrix) * color.rgb + colormatrix_c;)
 
+    if (!p->use_normalized_range && p->has_alpha) {
+        float tex_mul = 1 / mp_get_csp_mul(p->image_params.colorspace,
+                                           p->image_desc.component_bits,
+                                           p->image_desc.component_full_bits);
+        gl_sc_uniform_f(p->sc, "tex_mul_alpha", tex_mul);
+        GLSL(color.a *= tex_mul_alpha;)
+    }
+
     if (p->image_params.colorspace == MP_CSP_BT_2020_C) {
         // Conversion for C'rcY'cC'bc via the BT.2020 CL system:
         // C'bc = (B'-Y'c) / 1.9404  | C'bc <= 0
@@ -1528,6 +1534,8 @@ static void pass_convert_yuv(struct gl_video *p)
         GLSL(color.a = 1.0;)
     } else if (p->opts.alpha_mode == 2) { // blend
         GLSL(color = vec4(color.rgb * color.a, 1.0);)
+    } else if (p->gl->fb_premultiplied) {
+        GLSL(color = vec4(color.rgb * color.a, color.a);)
     }
 }
 
@@ -1703,7 +1711,7 @@ static void pass_dither(struct gl_video *p)
     GL *gl = p->gl;
 
     // Assume 8 bits per component if unknown.
-    int dst_depth = p->depth_g ? p->depth_g : 8;
+    int dst_depth = gl->fb_g ? gl->fb_g : 8;
     if (p->opts.dither_depth > 0)
         dst_depth = p->opts.dither_depth;
 
@@ -2508,6 +2516,9 @@ static void init_gl(struct gl_video *p)
 
     debug_check_gl(p, "before init_gl");
 
+    MP_VERBOSE(p, "Reported display depth: R=%d, G=%d, B=%d\n",
+               gl->fb_r, gl->fb_g, gl->fb_b);
+
     gl->Disable(GL_DITHER);
 
     gl_vao_init(&p->vao, gl, sizeof(struct vertex), vertex_vao);
@@ -2693,10 +2704,6 @@ static bool init_format(int fmt, struct gl_video *init)
 
 supported:
 
-    // Stuff like IMGFMT_420AP10. Untested, most likely insane.
-    if (desc.num_planes == 4 && (desc.component_bits % 8) != 0)
-        return false;
-
     if (desc.component_bits > 8 && desc.component_bits < 16) {
         if (init->texture_16bit_depth < 16)
             return false;
@@ -2742,12 +2749,6 @@ void gl_video_config(struct gl_video *p, struct mp_image_params *params)
     }
 
     gl_video_reset_surfaces(p);
-}
-
-void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b)
-{
-    MP_VERBOSE(p, "Display depth: R=%d, G=%d, B=%d\n", r, g, b);
-    p->depth_g = g;
 }
 
 void gl_video_set_osd_source(struct gl_video *p, struct osd_state *osd)

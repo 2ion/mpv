@@ -28,6 +28,7 @@
 #include "talloc.h"
 #include "common/msg.h"
 #include "common/av_common.h"
+#include "demux/stheader.h"
 #include "options/options.h"
 #include "video/mp_image.h"
 #include "sd.h"
@@ -110,7 +111,7 @@ static void get_resolution(struct sd *sd, int wh[2])
 static int init(struct sd *sd)
 {
     struct sd_lavc_priv *priv = talloc_zero(NULL, struct sd_lavc_priv);
-    enum AVCodecID cid = mp_codec_to_av_codec_id(sd->codec);
+    enum AVCodecID cid = mp_codec_to_av_codec_id(sd->sh->codec);
     AVCodecContext *ctx = NULL;
     AVCodec *sub_codec = avcodec_find_decoder(cid);
     if (!sub_codec)
@@ -118,7 +119,7 @@ static int init(struct sd *sd)
     ctx = avcodec_alloc_context3(sub_codec);
     if (!ctx)
         goto error;
-    mp_lavc_set_extradata(ctx, sd->extradata, sd->extradata_len);
+    mp_lavc_set_extradata(ctx, sd->sh->extradata, sd->sh->extradata_size);
     if (avcodec_open2(ctx, sub_codec, NULL) < 0)
         goto error;
     priv->avctx = ctx;
@@ -317,11 +318,10 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, double pts,
 
     double video_par = 0;
     if (priv->avctx->codec_id == AV_CODEC_ID_DVD_SUBTITLE &&
-            opts->stretch_dvd_subs) {
+        opts->stretch_dvd_subs)
+    {
         // For DVD subs, try to keep the subtitle PAR at display PAR.
-        double par =
-              (priv->video_params.d_w / (double)priv->video_params.d_h)
-            / (priv->video_params.w   / (double)priv->video_params.h);
+        double par = priv->video_params.p_w / (double)priv->video_params.p_h;
         if (isnormal(par))
             video_par = par;
     }

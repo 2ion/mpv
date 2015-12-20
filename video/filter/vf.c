@@ -494,19 +494,6 @@ void vf_seek_reset(struct vf_chain *c)
     vf_chain_forget_frames(c);
 }
 
-int vf_next_config(struct vf_instance *vf,
-                   int width, int height, int d_width, int d_height,
-                   unsigned int voflags, unsigned int outfmt)
-{
-    vf->fmt_out = vf->fmt_in;
-    vf->fmt_out.imgfmt = outfmt;
-    vf->fmt_out.w = width;
-    vf->fmt_out.h = height;
-    vf->fmt_out.d_w = d_width;
-    vf->fmt_out.d_h = d_height;
-    return 1;
-}
-
 int vf_next_query_format(struct vf_instance *vf, unsigned int fmt)
 {
     return fmt >= IMGFMT_START && fmt < IMGFMT_END
@@ -581,14 +568,9 @@ static int vf_reconfig_wrapper(struct vf_instance *vf,
     if (!mp_image_params_valid(&vf->fmt_in))
         return -2;
 
-    int r;
-    if (vf->reconfig) {
+    int r = 0;
+    if (vf->reconfig)
         r = vf->reconfig(vf, &vf->fmt_in, &vf->fmt_out);
-    } else if (vf->config) {
-        r = vf->config(vf, p->w, p->h, p->d_w, p->d_h, 0, p->imgfmt) ? 0 : -1;
-    } else {
-        r = 0;
-    }
 
     if (!mp_image_params_equal(&vf->fmt_in, p))
         r = -2;
@@ -609,7 +591,7 @@ int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params,
                 const struct mp_image_params *override_params)
 {
     int r = 0;
-    vf_chain_forget_frames(c);
+    vf_seek_reset(c);
     for (struct vf_instance *vf = c->first; vf; ) {
         struct vf_instance *next = vf->next;
         if (vf->autoinserted)
@@ -717,29 +699,4 @@ void vf_destroy(struct vf_chain *c)
     }
     vf_chain_forget_frames(c);
     talloc_free(c);
-}
-
-// When changing the size of an image that had old_w/old_h with
-// DAR *d_width/*d_height to the new size new_w/new_h, adjust
-// *d_width/*d_height such that the new image has the same pixel aspect ratio.
-void vf_rescale_dsize(int *d_width, int *d_height, int old_w, int old_h,
-                      int new_w, int new_h)
-{
-    *d_width  = *d_width  * new_w / old_w;
-    *d_height = *d_height * new_h / old_h;
-}
-
-// Set *d_width/*d_height to display aspect ratio with the givem source size
-void vf_set_dar(int *d_w, int *d_h, int w, int h, double dar)
-{
-    *d_w = w;
-    *d_h = h;
-    if (dar > 0.01) {
-        *d_w = h * dar + 0.5;
-        // we don't like horizontal downscale
-        if (*d_w < w) {
-            *d_w = w;
-            *d_h = w / dar + 0.5;
-        }
-    }
 }

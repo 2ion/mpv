@@ -40,13 +40,15 @@ struct sd_ass_priv {
     struct ass_track *ass_track;
     struct ass_track *shadow_track; // for --sub-ass=no rendering
     bool is_converted;
+    struct lavc_conv *converter;
     bool on_top;
     struct sub_bitmap *parts;
-    bool flush_on_seek;
     char last_text[500];
     struct mp_image_params video_params;
     struct mp_image_params last_params;
     double sub_speed;
+    int64_t *seen_packets;
+    int num_seen_packets;
 };
 
 static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts);
@@ -78,21 +80,31 @@ static void mp_ass_add_default_styles(ASS_Track *track, struct MPOpts *opts)
 
 static bool supports_format(const char *format)
 {
-    // "ssa" is used for the FFmpeg subtitle converter output
-    return format && (strcmp(format, "ass") == 0 ||
-                      strcmp(format, "ssa") == 0);
+    return (format && strcmp(format, "ass") == 0) ||
+           lavc_conv_supports_format(format);
 }
 
 static int init(struct sd *sd)
 {
     struct MPOpts *opts = sd->opts;
-    if (!sd->ass_library || !sd->ass_renderer || !sd->ass_lock || !sd->codec)
+    if (!sd->ass_library || !sd->ass_renderer || !sd->ass_lock)
         return -1;
 
-    struct sd_ass_priv *ctx = talloc_zero(NULL, struct sd_ass_priv);
+    struct sd_ass_priv *ctx = talloc_zero(sd, struct sd_ass_priv);
     sd->priv = ctx;
 
-    ctx->is_converted = sd->converted_from != NULL;
+    char *extradata = sd->sh->extradata;
+    int extradata_size = sd->sh->extradata_size;
+
+    if (strcmp(sd->sh->codec, "ass") != 0) {
+        ctx->is_converted = true;
+        ctx->converter = lavc_conv_create(sd->log, sd->sh->codec, extradata,
+                                          extradata_size);
+        if (!ctx->converter)
+            return -1;
+        extradata = lavc_conv_get_extradata(ctx->converter);
+        extradata_size = extradata ? strlen(extradata) : 0;
+    }
 
     pthread_mutex_lock(sd->ass_lock);
 
@@ -105,10 +117,8 @@ static int init(struct sd *sd)
     ctx->shadow_track->PlayResY = 288;
     mp_ass_add_default_styles(ctx->shadow_track, opts);
 
-    if (sd->extradata) {
-        ass_process_codec_private(ctx->ass_track, sd->extradata,
-                                  sd->extradata_len);
-    }
+    if (extradata)
+        ass_process_codec_private(ctx->ass_track, extradata, extradata_size);
 
     mp_ass_add_default_styles(ctx->ass_track, opts);
 
@@ -130,19 +140,45 @@ static int init(struct sd *sd)
     return 0;
 }
 
+// Test if the packet with the given file position (used as unique ID) was
+// already consumed. Return false if the packet is new (and add it to the
+// internal list), and return true if it was already seen.
+static bool check_packet_seen(struct sd *sd, int64_t pos)
+{
+    struct sd_ass_priv *priv = sd->priv;
+    int a = 0;
+    int b = priv->num_seen_packets;
+    while (a < b) {
+        int mid = a + (b - a) / 2;
+        int64_t val = priv->seen_packets[mid];
+        if (pos == val)
+            return true;
+        if (pos > val) {
+            a = mid + 1;
+        } else {
+            b = mid;
+        }
+    }
+    MP_TARRAY_INSERT_AT(priv, priv->seen_packets, priv->num_seen_packets, a, pos);
+    return false;
+}
+
 static void decode(struct sd *sd, struct demux_packet *packet)
 {
     struct sd_ass_priv *ctx = sd->priv;
     ASS_Track *track = ctx->ass_track;
-    if (strcmp(sd->codec, "ass") == 0) {
-        long long ipts = lrint(packet->pts * 1000);
-        long long iduration = lrint(packet->duration * 1000);
-        ass_process_chunk(track, packet->buffer, packet->len, ipts, iduration);
-        return;
+    if (ctx->converter) {
+        if (check_packet_seen(sd, packet->pos))
+            return;
+        char **r = lavc_conv_decode(ctx->converter, packet);
+        for (int n = 0; r && r[n]; n++)
+            ass_process_data(track, r[n], strlen(r[n]));
     } else {
-        // "ssa" codec ID
-        ctx->flush_on_seek = true;
-        ass_process_data(track, packet->buffer, packet->len);
+        // Note that for this packet format, libass has an internal mechanism
+        // for discarding duplicate (already seen) packets.
+        ass_process_chunk(track, packet->buffer, packet->len,
+                          lrint(packet->pts * 1000),
+                          lrint(packet->duration * 1000));
     }
 }
 
@@ -307,11 +343,9 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
                        opts->ass_vsfilter_aspect_compat))
     {
         // Let's use the original video PAR for vsfilter compatibility:
-        double par = scale
-            * (ctx->video_params.d_w / (double)ctx->video_params.d_h)
-            / (ctx->video_params.w   / (double)ctx->video_params.h);
+        double par = ctx->video_params.p_w / (double)ctx->video_params.p_h;
         if (isnormal(par))
-            scale = par;
+            scale *= par;
     }
     configure_ass(sd, &dim, converted, track);
     ass_set_pixel_aspect(renderer, scale);
@@ -476,26 +510,22 @@ static void fill_plaintext(struct sd *sd, double pts)
         track->styles[track->default_style].Alignment = ctx->on_top ? 6 : 2;
 }
 
-static void fix_events(struct sd *sd)
-{
-    struct sd_ass_priv *ctx = sd->priv;
-    ctx->flush_on_seek = false;
-}
-
 static void reset(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
-    if (ctx->flush_on_seek || sd->opts->sub_clear_on_seek)
+    if (sd->opts->sub_clear_on_seek)
         ass_flush_events(ctx->ass_track);
-    ctx->flush_on_seek = false;
+    if (ctx->converter)
+        lavc_conv_reset(ctx->converter);
 }
 
 static void uninit(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
 
+    if (ctx->converter)
+        lavc_conv_uninit(ctx->converter);
     ass_free_track(ctx->ass_track);
-    talloc_free(ctx);
 }
 
 static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
@@ -530,7 +560,6 @@ const struct sd_functions sd_ass = {
     .decode = decode,
     .get_bitmaps = get_bitmaps,
     .get_text = get_text,
-    .fix_events = fix_events,
     .control = control,
     .reset = reset,
     .uninit = uninit,
