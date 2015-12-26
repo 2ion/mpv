@@ -208,7 +208,10 @@ static int64_t mp_seek(void *opaque, int64_t pos, int whence)
     struct demuxer *demuxer = opaque;
     struct stream *stream = demuxer->stream;
     int64_t current_pos;
-    MP_TRACE(demuxer, "mp_seek(%p, %"PRId64", %d)\n", stream, pos, whence);
+    MP_TRACE(demuxer, "mp_seek(%p, %"PRId64", %s)\n", stream, pos,
+             whence == SEEK_END ? "end" :
+             whence == SEEK_CUR ? "cur" :
+             whence == SEEK_SET ? "set" : "size");
     if (whence == SEEK_END || whence == AVSEEK_SIZE) {
         int64_t end = stream_get_size(stream);
         if (end < 0)
@@ -528,7 +531,7 @@ static int dict_get_decimal(AVDictionary *dict, const char *entry, int def)
     return def;
 }
 
-static void handle_stream(demuxer_t *demuxer, int i)
+static void handle_new_stream(demuxer_t *demuxer, int i)
 {
     lavf_priv_t *priv = demuxer->priv;
     AVFormatContext *avfc = priv->avfc;
@@ -538,9 +541,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
 
     switch (codec->codec_type) {
     case AVMEDIA_TYPE_AUDIO: {
-        sh = new_sh_stream(demuxer, STREAM_AUDIO);
-        if (!sh)
-            break;
+        sh = demux_alloc_sh_stream(STREAM_AUDIO);
         sh_audio_t *sh_audio = sh->audio;
 
         // probably unneeded
@@ -555,9 +556,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
         break;
     }
     case AVMEDIA_TYPE_VIDEO: {
-        sh = new_sh_stream(demuxer, STREAM_VIDEO);
-        if (!sh)
-            break;
+        sh = demux_alloc_sh_stream(STREAM_VIDEO);
         sh_video_t *sh_video = sh->video;
 
         if (st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
@@ -606,9 +605,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
     }
     case AVMEDIA_TYPE_SUBTITLE: {
         sh_sub_t *sh_sub;
-        sh = new_sh_stream(demuxer, STREAM_SUB);
-        if (!sh)
-            break;
+        sh = demux_alloc_sh_stream(STREAM_SUB);
         sh_sub = sh->sub;
 
         if (codec->extradata_size) {
@@ -657,9 +654,8 @@ static void handle_stream(demuxer_t *demuxer, int i)
         sh->codec = mp_codec_from_av_codec_id(codec->codec_id);
         sh->codec_tag = codec->codec_tag;
         sh->lav_headers = avcodec_alloc_context3(NULL);
-        if (!sh->lav_headers)
-            return;
-        mp_copy_lav_codec_headers(sh->lav_headers, codec);
+        if (sh->lav_headers)
+            mp_copy_lav_codec_headers(sh->lav_headers, codec);
 
         if (st->disposition & AV_DISPOSITION_DEFAULT)
             sh->default_track = true;
@@ -677,10 +673,10 @@ static void handle_stream(demuxer_t *demuxer, int i)
         if (!sh->title && sh->hls_bitrate > 0)
             sh->title = talloc_asprintf(sh, "bitrate %d", sh->hls_bitrate);
         sh->missing_timestamps = !!(priv->avif_flags & AVFMT_NOTIMESTAMPS);
+        demux_add_sh_stream(demuxer, sh);
     }
 
     select_tracks(demuxer, i);
-    demux_changed(demuxer, DEMUX_EVENT_STREAMS);
 }
 
 // Add any new streams that might have been added
@@ -688,7 +684,7 @@ static void add_new_streams(demuxer_t *demuxer)
 {
     lavf_priv_t *priv = demuxer->priv;
     while (priv->num_streams < priv->avfc->nb_streams)
-        handle_stream(demuxer, priv->num_streams);
+        handle_new_stream(demuxer, priv->num_streams);
 }
 
 static void update_metadata(demuxer_t *demuxer, AVPacket *pkt)
@@ -841,7 +837,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
 
     // Often useful with OGG audio-only files, which have metadata in the audio
     // track metadata instead of the main metadata.
-    if (demuxer->num_streams == 1) {
+    if (demux_get_num_stream(demuxer) == 1) {
         priv->merge_track_metadata = true;
         for (int n = 0; n < priv->num_streams; n++) {
             if (priv->streams[n])

@@ -792,8 +792,6 @@ static int mp_property_chapter(void *ctx, struct m_property *prop,
         if (action == M_PROPERTY_SWITCH) {
             struct m_property_switch_arg *sarg = arg;
             step_all = ROUND(sarg->inc);
-            if (num < 2) // semi-broken file; ignore for user convenience
-                return M_PROPERTY_UNAVAILABLE;
             // Check threshold for relative backward seeks
             if (mpctx->opts->chapter_seek_threshold >= 0 && step_all < 0) {
                 double current_chapter_start =
@@ -814,6 +812,9 @@ static int mp_property_chapter(void *ctx, struct m_property *prop,
             if (mpctx->opts->keep_open) {
                 seek_to_last_frame(mpctx);
             } else {
+                // semi-broken file; ignore for user convenience
+                if (action == M_PROPERTY_SWITCH && num < 2)
+                    return M_PROPERTY_UNAVAILABLE;
                 if (!mpctx->stop_play)
                     mpctx->stop_play = PT_NEXT_ENTRY;
             }
@@ -2207,7 +2208,7 @@ static int probe_deint_filters(struct MPContext *mpctx)
     if (check_output_format(mpctx, IMGFMT_VAAPI) &&
         probe_deint_filter(mpctx, "vavpp"))
         return 0;
-    if (probe_deint_filter(mpctx, "yadif:mode=field:interlaced-only=yes"))
+    if (probe_deint_filter(mpctx, "yadif"))
         return 0;
     return -1;
 }
@@ -3697,8 +3698,8 @@ static const char *const *const mp_event_property_change[] = {
       "samplerate", "channels", "audio", "volume", "mute", "balance",
       "volume-restore-data", "current-ao", "audio-codec-name", "audio-params",
       "audio-out-params"),
-    E(MPV_EVENT_SEEK, "seeking", "core-idle"),
-    E(MPV_EVENT_PLAYBACK_RESTART, "seeking", "core-idle"),
+    E(MPV_EVENT_SEEK, "seeking", "core-idle", "eof-reached"),
+    E(MPV_EVENT_PLAYBACK_RESTART, "seeking", "core-idle", "eof-reached"),
     E(MPV_EVENT_METADATA_UPDATE, "metadata", "filtered-metadata", "media-title"),
     E(MPV_EVENT_CHAPTER_CHANGE, "chapter", "chapter-metadata"),
     E(MP_EVENT_CACHE_UPDATE, "cache", "cache-free", "cache-used", "cache-idle",
@@ -4908,8 +4909,8 @@ int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *re
         char state[3] = {'p', cmd->is_mouse_button ? 'm' : '-'};
         if (cmd->is_up_down)
             state[0] = cmd->repeated ? 'r' : (cmd->is_up ? 'u' : 'd');
-        event.num_args = 3;
-        event.args = (const char*[3]){"key-binding", name, state};
+        event.num_args = 4;
+        event.args = (const char*[4]){"key-binding", name, state, cmd->key_name};
         if (mp_client_send_event_dup(mpctx, target,
                                      MPV_EVENT_CLIENT_MESSAGE, &event) < 0)
         {
