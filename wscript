@@ -55,6 +55,11 @@ build_options = [
         'desc': 'manpage generation',
         'func': check_ctx_vars('RST2MAN')
     }, {
+        'name': '--html-build',
+        'desc': 'html manual generation',
+        'func': check_ctx_vars('RST2HTML'),
+        'default': 'disable',
+    }, {
         'name': '--pdf-build',
         'desc': 'pdf manual generation',
         'func': check_ctx_vars('RST2PDF'),
@@ -563,10 +568,6 @@ audio_output_features = [
             fragment=load_fragment('coreaudio.c'),
             framework_name=['CoreFoundation', 'CoreAudio', 'AudioUnit', 'AudioToolbox'])
     }, {
-        'name': '--dsound',
-        'desc': 'DirectSound audio output',
-        'func': check_cc(header_name='dsound.h'),
-    }, {
         'name': '--wasapi',
         'desc': 'WASAPI audio output',
         'deps': ['win32', 'atomics'],
@@ -932,6 +933,7 @@ def configure(ctx):
     ctx.find_program(pkg_config,  var='PKG_CONFIG')
     ctx.find_program(ar,          var='AR')
     ctx.find_program('perl',      var='BIN_PERL')
+    ctx.find_program('rst2html',  var='RST2HTML',  mandatory=False)
     ctx.find_program('rst2man',   var='RST2MAN',   mandatory=False)
     ctx.find_program('rst2pdf',   var='RST2PDF',   mandatory=False)
     ctx.find_program(windres,     var='WINDRES',   mandatory=False)

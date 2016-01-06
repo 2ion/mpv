@@ -20,16 +20,22 @@
 #ifndef MP_AO_WASAPI_H_
 #define MP_AO_WASAPI_H_
 
+#include <stdlib.h>
 #include <stdbool.h>
+#include <windows.h>
+#include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
-#include <mmdeviceapi.h>
-#include <avrt.h>
+#include <endpointvolume.h>
 
+#include "common/msg.h"
 #include "osdep/atomics.h"
+#include "internal.h"
+#include "ao.h"
 
 typedef struct change_notify {
     IMMNotificationClient client; // this must be first in the structure!
+    IMMDeviceEnumerator *pEnumerator; // object where client is registered
     LPWSTR monitored; // Monitored device
     bool is_hotplug;
     struct ao *ao;
@@ -63,11 +69,12 @@ typedef struct wasapi_state {
     // for setting the audio thread priority
     HANDLE hTask;
 
+    // ID of the device to use
+    LPWSTR deviceID;
     // WASAPI object handles owned and used by audio thread
     IMMDevice *pDevice;
     IAudioClient *pAudioClient;
     IAudioRenderClient *pRenderClient;
-    IMMDeviceEnumerator *pEnumerator;
 
     // WASAPI internal clock information, for estimating delay
     IAudioClock *pAudioClock;
@@ -106,5 +113,23 @@ typedef struct wasapi_state {
 
     change_notify change;
 } wasapi_state;
+
+char *mp_GUID_to_str_buf(char *buf, size_t buf_size, const GUID *guid);
+char *mp_PKEY_to_str_buf(char *buf, size_t buf_size, const PROPERTYKEY *pkey);
+char *mp_HRESULT_to_str_buf(char *buf, size_t buf_size, HRESULT hr);
+#define mp_GUID_to_str(guid) mp_GUID_to_str_buf((char[40]){0}, 40, (guid))
+#define mp_PKEY_to_str(pkey) mp_PKEY_to_str_buf((char[42]){0}, 42, (pkey))
+#define mp_HRESULT_to_str(hr) mp_HRESULT_to_str_buf((char[60]){0}, 60, (hr))
+#define mp_LastError_to_str() mp_HRESULT_to_str(HRESULT_FROM_WIN32(GetLastError()))
+
+void wasapi_list_devs(struct ao *ao, struct ao_device_list *list);
+LPWSTR find_deviceID(struct ao *ao);
+
+void wasapi_dispatch(struct ao *ao);
+HRESULT wasapi_thread_init(struct ao *ao);
+void wasapi_thread_uninit(struct ao *ao);
+
+void wasapi_receive_proxies(wasapi_state *state);
+void wasapi_release_proxies(wasapi_state *state);
 
 #endif

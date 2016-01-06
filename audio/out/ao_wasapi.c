@@ -17,24 +17,16 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdlib.h>
 #include <math.h>
 #include <inttypes.h>
-#include <process.h>
-#include <initguid.h>
-#include <audioclient.h>
-#include <endpointvolume.h>
-#include <mmdeviceapi.h>
-#include <avrt.h>
+#include <libavutil/mathematics.h>
 
-#include "audio/out/ao_wasapi.h"
-#include "audio/out/ao_wasapi_utils.h"
-
-#include "audio/format.h"
+#include "options/m_option.h"
 #include "osdep/timer.h"
 #include "osdep/io.h"
+#include "ao_wasapi.h"
 
-
+// naive av_rescale for unsigned
 static UINT64 uint64_scale(UINT64 x, UINT64 num, UINT64 den)
 {
     return (x / den) * num
@@ -52,7 +44,7 @@ static HRESULT get_device_delay(struct wasapi_state *state, double *delay_us) {
     // inaccurate due to the length of the call
     // http://msdn.microsoft.com/en-us/library/windows/desktop/dd370889%28v=vs.85%29.aspx
     if (hr == S_FALSE) {
-        MP_DBG(state, "Possibly inaccurate device position.\n");
+        MP_VERBOSE(state, "Possibly inaccurate device position.\n");
         hr = S_OK;
     }
     EXIT_ON_ERROR(hr);
@@ -68,11 +60,16 @@ static HRESULT get_device_delay(struct wasapi_state *state, double *delay_us) {
     // This should normally be very small (<1 us), but just in case. . .
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
-    // apparently, we're supposed to allow the qpc scale to overflow to be
-    // comparable to qpc_position (100ns units), so don't do anything fancy
-    INT64 qpc_diff = qpc.QuadPart * 10000000 / state->qpc_frequency.QuadPart
+    INT64 qpc_diff = av_rescale(qpc.QuadPart, 10000000, state->qpc_frequency.QuadPart)
                      - qpc_position;
-    *delay_us -= qpc_diff / 10.0; // convert to us
+    // ignore the above calculation if it yeilds more than 10 seconds (due to
+    // possible overflow inside IAudioClock_GetPosition)
+    if (qpc_diff < 10 * 10000000) {
+        *delay_us -= qpc_diff / 10.0; // convert to us
+    } else {
+        MP_VERBOSE(state, "Insane qpc delay correction of %g seconds. "
+                   "Ignoring it.\n", qpc_diff / 10000000.0);
+    }
 
     MP_TRACE(state, "Device delay: %g us\n", *delay_us);
 
@@ -268,6 +265,10 @@ static void uninit(struct ao *ao)
     SAFE_RELEASE(state->hWake,       CloseHandle(state->hWake));
     SAFE_RELEASE(state->hAudioThread,CloseHandle(state->hAudioThread));
 
+    wasapi_change_uninit(ao);
+
+    talloc_free(state->deviceID);
+
     CoUninitialize();
     MP_DBG(ao, "Uninit wasapi done\n");
 }
@@ -279,6 +280,14 @@ static int init(struct ao *ao)
 
     struct wasapi_state *state = ao->priv;
     state->log = ao->log;
+
+    state->deviceID = find_deviceID(ao);
+    if (!state->deviceID) {
+        uninit(ao);
+        return -1;
+    }
+
+    wasapi_change_init(ao, false);
 
     state->hInitDone = CreateEventW(NULL, FALSE, FALSE, NULL);
     state->hWake     = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -449,10 +458,7 @@ static void audio_resume(struct ao *ao)
 static void hotplug_uninit(struct ao *ao)
 {
     MP_DBG(ao, "Hotplug uninit\n");
-    struct wasapi_state *state = ao->priv;
     wasapi_change_uninit(ao);
-    SAFE_RELEASE(state->pEnumerator,
-                 IMMDeviceEnumerator_Release(state->pEnumerator));
     CoUninitialize();
 }
 
@@ -462,11 +468,7 @@ static int hotplug_init(struct ao *ao)
     struct wasapi_state *state = ao->priv;
     state->log = ao->log;
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-    HRESULT hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
-                                  &IID_IMMDeviceEnumerator,
-                                  (void **)&state->pEnumerator);
-    EXIT_ON_ERROR(hr);
-    hr = wasapi_change_init(ao, true);
+    HRESULT hr = wasapi_change_init(ao, true);
     EXIT_ON_ERROR(hr);
 
     return 0;

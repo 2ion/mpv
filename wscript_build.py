@@ -13,6 +13,16 @@ def _add_rst_manual_dependencies(ctx):
             ctx.path.find_node('DOCS/man/mpv.rst'),
             ctx.path.find_node(manpage_source))
 
+def _build_html(ctx):
+    ctx(
+        name         = 'rst2html',
+        target       = 'DOCS/man/mpv.html',
+        source       = 'DOCS/man/mpv.rst',
+        rule         = '${RST2HTML} ${SRC} ${TGT}',
+        install_path = ctx.env.DOCDIR)
+
+    _add_rst_manual_dependencies(ctx)
+
 def _build_man(ctx):
     ctx(
         name         = 'rst2man',
@@ -137,7 +147,6 @@ def build(ctx):
         ( "audio/out/ao_coreaudio_exclusive.c",  "coreaudio" ),
         ( "audio/out/ao_coreaudio_properties.c", "coreaudio" ),
         ( "audio/out/ao_coreaudio_utils.c",      "coreaudio" ),
-        ( "audio/out/ao_dsound.c",               "dsound" ),
         ( "audio/out/ao_jack.c",                 "jack" ),
         ( "audio/out/ao_lavc.c",                 "encoding" ),
         ( "audio/out/ao_null.c" ),
@@ -542,6 +551,9 @@ def build(ctx):
                 includes     = [ctx.srcnode.abspath() + '/video/filter'],
                 features     = 'c cshlib',
                 install_path = ctx.env.LIBDIR + '/mpv' )
+
+    if ctx.dependency_satisfied('html-build'):
+        _build_html(ctx)
 
     if ctx.dependency_satisfied('manpage-build'):
         _build_man(ctx)
