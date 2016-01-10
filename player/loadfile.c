@@ -836,6 +836,8 @@ static void transfer_playlist(struct MPContext *mpctx, struct playlist *pl)
     if (pl->first) {
         prepare_playlist(mpctx, pl);
         struct playlist_entry *new = pl->current;
+        if (mpctx->playlist->current)
+            playlist_add_redirect(pl, mpctx->playlist->current->filename);
         playlist_transfer_entries(mpctx->playlist, pl);
         // current entry is replaced
         if (mpctx->playlist->current)
@@ -1263,6 +1265,7 @@ terminate_playback:
 
     if (mpctx->stop_play == PT_RELOAD_FILE) {
         mpctx->stop_play = KEEP_PLAYING;
+        mp_cancel_reset(mpctx->playback_abort);
         goto reopen_file;
     }
 

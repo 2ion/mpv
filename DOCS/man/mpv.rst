@@ -520,8 +520,9 @@ TAKING SCREENSHOTS
 
 Screenshots of the currently played file can be taken using the 'screenshot'
 input mode command, which is by default bound to the ``s`` key. Files named
-``shotNNNN.jpg`` will be saved in the working directory, using the first
-available number - no files will be overwritten.
+``mpv-shotNNNN.jpg`` will be saved in the working directory, using the first
+available number - no files will be overwritten. In pseudo-GUI mode, the
+screenshot will be saved somewhere else. See `PSEUDO GUI MODE`_.
 
 A screenshot will usually contain the unscaled video contents at the end of the
 video filter chain and subtitles. By default, ``S`` takes screenshots without
@@ -654,9 +655,8 @@ PROTOCOLS
     absolute path.
 
 ``fd://123``
-    Read data from the given UNIX FD (for example 123). This is similar to
-    piping data to stdin via ``-``, but can use an arbitrary file descriptor.
-    Will not work correctly on MS Windows.
+    Read data from the given file descriptor (for example 123). This is similar
+    to piping data to stdin via ``-``, but can use an arbitrary file descriptor.
 
 ``edl://[edl specification as in edl-mpv.rst]``
     Stitch together parts of multiple files and play them.
