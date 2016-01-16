@@ -23,7 +23,7 @@
 #include <assert.h>
 
 #include "config.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 
 #include "common/msg.h"
 #include "common/encode.h"
@@ -218,7 +218,7 @@ void reinit_audio_chain(struct MPContext *mpctx)
         mpctx->d_audio->header = sh;
         mpctx->d_audio->pool = mp_audio_pool_create(mpctx->d_audio);
         mpctx->d_audio->afilter = af_new(mpctx->global);
-        mpctx->d_audio->afilter->replaygain_data = sh->audio->replaygain_data;
+        mpctx->d_audio->afilter->replaygain_data = sh->codec->replaygain_data;
         mpctx->d_audio->spdif_passthrough = true;
         mpctx->ao_buffer = mp_audio_buffer_create(NULL);
         if (!audio_init_best_codec(mpctx->d_audio))

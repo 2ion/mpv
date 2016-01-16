@@ -38,7 +38,6 @@
 
 #include "demux/stheader.h"
 #include "video/decode/vd.h"
-#include "video/filter/vf.h"
 
 #include "video/decode/dec_video.h"
 
@@ -59,8 +58,6 @@ const vd_functions_t * const mpcodecs_vd_drivers[] = {
 void video_reset_decoding(struct dec_video *d_video)
 {
     video_vd_control(d_video, VDCTRL_RESET, NULL);
-    if (d_video->vfilter && d_video->vfilter->initialized == 1)
-        vf_seek_reset(d_video->vfilter);
     mp_image_unrefp(&d_video->waiting_decoded_mpi);
     d_video->num_buffered_pts = 0;
     d_video->last_pts = MP_NOPTS_VALUE;
@@ -68,6 +65,7 @@ void video_reset_decoding(struct dec_video *d_video)
     d_video->decoded_pts = MP_NOPTS_VALUE;
     d_video->codec_pts = MP_NOPTS_VALUE;
     d_video->codec_dts = MP_NOPTS_VALUE;
+    d_video->last_format = d_video->fixed_format = (struct mp_image_params){0};
 }
 
 int video_vd_control(struct dec_video *d_video, int cmd, void *arg)
@@ -78,41 +76,6 @@ int video_vd_control(struct dec_video *d_video, int cmd, void *arg)
     return CONTROL_UNKNOWN;
 }
 
-int video_set_colors(struct dec_video *d_video, const char *item, int value)
-{
-    vf_equalizer_t data;
-
-    data.item = item;
-    data.value = value;
-
-    MP_VERBOSE(d_video, "set video colors %s=%d \n", item, value);
-    if (d_video->vfilter) {
-        int ret = video_vf_vo_control(d_video, VFCTRL_SET_EQUALIZER, &data);
-        if (ret == CONTROL_TRUE)
-            return 1;
-    }
-    MP_VERBOSE(d_video, "Video attribute '%s' is not supported by selected vo.\n",
-               item);
-    return 0;
-}
-
-int video_get_colors(struct dec_video *d_video, const char *item, int *value)
-{
-    vf_equalizer_t data;
-
-    data.item = item;
-
-    MP_VERBOSE(d_video, "get video colors %s \n", item);
-    if (d_video->vfilter) {
-        int ret = video_vf_vo_control(d_video, VFCTRL_GET_EQUALIZER, &data);
-        if (ret == CONTROL_TRUE) {
-            *value = data.value;
-            return 1;
-        }
-    }
-    return 0;
-}
-
 void video_uninit(struct dec_video *d_video)
 {
     mp_image_unrefp(&d_video->waiting_decoded_mpi);
@@ -121,7 +84,6 @@ void video_uninit(struct dec_video *d_video)
         MP_VERBOSE(d_video, "Uninit video.\n");
         d_video->vd_driver->uninit(d_video);
     }
-    vf_destroy(d_video->vfilter);
     talloc_free(d_video);
 }
 
@@ -168,7 +130,7 @@ bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
 
     struct mp_decoder_entry *decoder = NULL;
     struct mp_decoder_list *list =
-        mp_select_video_decoders(d_video->header->codec, video_decoders);
+        mp_select_video_decoders(d_video->header->codec->codec, video_decoders);
 
     mp_print_decoders(d_video->log, MSGL_V, "Codec list:", list);
 
@@ -196,7 +158,7 @@ bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
         MP_VERBOSE(d_video, "Selected video codec: %s\n", d_video->decoder_desc);
     } else {
         MP_ERR(d_video, "Failed to initialize a video decoder for codec '%s'.\n",
-               d_video->header->codec ? d_video->header->codec : "<unknown>");
+               d_video->header->codec->codec);
     }
 
     if (d_video->header->missing_timestamps) {
@@ -207,6 +169,65 @@ bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
 
     talloc_free(list);
     return !!d_video->vd_driver;
+}
+
+static void fix_image_params(struct dec_video *d_video,
+                             struct mp_image_params *params)
+{
+    struct MPOpts *opts = d_video->opts;
+    struct mp_image_params p = *params;
+    struct mp_codec_params *c = d_video->header->codec;
+
+    MP_VERBOSE(d_video, "Decoder format: %s\n", mp_image_params_to_str(params));
+
+    // While mp_image_params normally always have to have d_w/d_h set, the
+    // decoder signals unknown bitstream aspect ratio with both set to 0.
+    float dec_aspect = p.p_w > 0 && p.p_h > 0 ? p.p_w / (float)p.p_h : 0;
+    if (d_video->initial_decoder_aspect == 0)
+        d_video->initial_decoder_aspect = dec_aspect;
+
+    bool use_container = true;
+    switch (opts->aspect_method) {
+    case 0:
+        // We normally prefer the container aspect, unless the decoder aspect
+        // changes at least once.
+        if (dec_aspect > 0 && d_video->initial_decoder_aspect != dec_aspect) {
+            MP_VERBOSE(d_video, "Using bitstream aspect ratio.\n");
+            // Even if the aspect switches back, don't use container aspect again.
+            d_video->initial_decoder_aspect = -1;
+            use_container = false;
+        }
+        break;
+    case 1:
+        use_container = false;
+        break;
+    }
+
+    if (use_container && c->par_w > 0 && c->par_h) {
+        MP_VERBOSE(d_video, "Using container aspect ratio.\n");
+        p.p_w = c->par_w;
+        p.p_h = c->par_h;
+    }
+
+    if (opts->movie_aspect >= 0) {
+        MP_VERBOSE(d_video, "Forcing user-set aspect ratio.\n");
+        if (opts->movie_aspect == 0) {
+            p.p_w = p.p_h = 1;
+        } else {
+            AVRational a = av_d2q(opts->movie_aspect, INT_MAX);
+            mp_image_params_set_dsize(&p, a.num, a.den);
+        }
+    }
+
+    // Assume square pixels if no aspect ratio is set at all.
+    if (p.p_w <= 0 || p.p_h <= 0)
+        p.p_w = p.p_h = 1;
+
+    // Detect colorspace from resolution.
+    mp_image_params_guess_csp(&p);
+
+    d_video->last_format = *params;
+    d_video->fixed_format = p;
 }
 
 static void add_avi_pts(struct dec_video *d_video, double pts)
@@ -242,7 +263,7 @@ struct mp_image *video_decode(struct dec_video *d_video,
                               int drop_frame)
 {
     struct MPOpts *opts = d_video->opts;
-    bool avi_pts = d_video->header->video->avi_dts && opts->correct_pts;
+    bool avi_pts = d_video->header->codec->avi_dts && opts->correct_pts;
 
     struct demux_packet packet_copy;
     if (packet && packet->dts == MP_NOPTS_VALUE) {
@@ -264,7 +285,7 @@ struct mp_image *video_decode(struct dec_video *d_video,
     double prev_codec_pts = d_video->codec_pts;
     double prev_codec_dts = d_video->codec_dts;
 
-    if (d_video->header->video->avi_dts)
+    if (d_video->header->codec->avi_dts)
         drop_frame = 0;
 
     MP_STATS(d_video, "start decode video");
@@ -329,104 +350,17 @@ struct mp_image *video_decode(struct dec_video *d_video,
     if (d_video->num_codec_pts_problems || pkt_pts == MP_NOPTS_VALUE)
         d_video->has_broken_packet_pts = 1;
 
+    if (!mp_image_params_equal(&d_video->last_format, &mpi->params))
+        fix_image_params(d_video, &mpi->params);
+
+    mpi->params = d_video->fixed_format;
+
     mpi->pts = pts;
     d_video->decoded_pts = pts;
     return mpi;
 }
 
-int video_reconfig_filters(struct dec_video *d_video,
-                           const struct mp_image_params *params)
+void video_reset_aspect(struct dec_video *d_video)
 {
-    struct MPOpts *opts = d_video->opts;
-    struct mp_image_params p = *params;
-    struct sh_video *sh = d_video->header->video;
-
-    // While mp_image_params normally always have to have d_w/d_h set, the
-    // decoder signals unknown bitstream aspect ratio with both set to 0.
-    float dec_aspect = p.p_w > 0 && p.p_h > 0 ? p.p_w / (float)p.p_h : 0;
-    if (d_video->initial_decoder_aspect == 0)
-        d_video->initial_decoder_aspect = dec_aspect;
-
-    bool use_container = true;
-    switch (opts->aspect_method) {
-    case 0:
-        // We normally prefer the container aspect, unless the decoder aspect
-        // changes at least once.
-        if (dec_aspect > 0 && d_video->initial_decoder_aspect != dec_aspect) {
-            MP_VERBOSE(d_video, "Using bitstream aspect ratio.\n");
-            // Even if the aspect switches back, don't use container aspect again.
-            d_video->initial_decoder_aspect = -1;
-            use_container = false;
-        }
-        break;
-    case 1:
-        use_container = false;
-        break;
-    }
-
-    if (use_container && sh->par_w > 0 && sh->par_h) {
-        MP_VERBOSE(d_video, "Using container aspect ratio.\n");
-        p.p_w = sh->par_w;
-        p.p_h = sh->par_h;
-    }
-
-    if (opts->movie_aspect >= 0) {
-        MP_VERBOSE(d_video, "Forcing user-set aspect ratio.\n");
-        if (opts->movie_aspect == 0) {
-            p.p_w = p.p_h = 1;
-        } else {
-            AVRational a = av_d2q(opts->movie_aspect, INT_MAX);
-            mp_image_params_set_dsize(&p, a.num, a.den);
-        }
-    }
-
-    // Assume square pixels if no aspect ratio is set at all.
-    if (p.p_w <= 0 || p.p_h <= 0)
-        p.p_w = p.p_h = 1;
-
-    // Detect colorspace from resolution.
-    mp_image_params_guess_csp(&p);
-
-    if (vf_reconfig(d_video->vfilter, params, &p) < 0) {
-        MP_FATAL(d_video, "Cannot initialize video filters.\n");
-        return -1;
-    }
-
-    return 0;
-}
-
-// Send a VCTRL, or if it doesn't work, translate it to a VOCTRL and try the VO.
-int video_vf_vo_control(struct dec_video *d_video, int vf_cmd, void *data)
-{
-    if (d_video->vfilter && d_video->vfilter->initialized > 0) {
-        int r = vf_control_any(d_video->vfilter, vf_cmd, data);
-        if (r != CONTROL_UNKNOWN)
-            return r;
-    }
-
-    switch (vf_cmd) {
-    case VFCTRL_GET_DEINTERLACE:
-        return vo_control(d_video->vo, VOCTRL_GET_DEINTERLACE, data) == VO_TRUE;
-    case VFCTRL_SET_DEINTERLACE:
-        return vo_control(d_video->vo, VOCTRL_SET_DEINTERLACE, data) == VO_TRUE;
-    case VFCTRL_SET_EQUALIZER: {
-        vf_equalizer_t *eq = data;
-        if (!d_video->vo->config_ok)
-            return CONTROL_FALSE;                       // vo not configured?
-        struct voctrl_set_equalizer_args param = {
-            eq->item, eq->value
-        };
-        return vo_control(d_video->vo, VOCTRL_SET_EQUALIZER, &param) == VO_TRUE;
-    }
-    case VFCTRL_GET_EQUALIZER: {
-        vf_equalizer_t *eq = data;
-        if (!d_video->vo->config_ok)
-            return CONTROL_FALSE;                       // vo not configured?
-        struct voctrl_get_equalizer_args param = {
-            eq->item, &eq->value
-        };
-        return vo_control(d_video->vo, VOCTRL_GET_EQUALIZER, &param) == VO_TRUE;
-    }
-    }
-    return CONTROL_UNKNOWN;
+    d_video->last_format = (struct mp_image_params){0};
 }

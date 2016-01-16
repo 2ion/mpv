@@ -29,7 +29,7 @@
 
 #include "config.h"
 #include "options/options.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 #include "common/msg.h"
 #include "common/global.h"
 #include "osdep/threads.h"
@@ -214,13 +214,9 @@ struct sh_stream *demux_alloc_sh_stream(enum stream_type type)
         .index = -1,
         .ff_index = -1,     // may be overwritten by demuxer
         .demuxer_id = -1,   // ... same
+        .codec = talloc_zero(sh, struct mp_codec_params),
     };
-    switch (sh->type) {
-    case STREAM_VIDEO: sh->video = talloc_zero(sh, struct sh_video); break;
-    case STREAM_AUDIO: sh->audio = talloc_zero(sh, struct sh_audio); break;
-    case STREAM_SUB:   sh->sub = talloc_zero(sh, struct sh_sub); break;
-    }
-
+    sh->codec->type = type;
     return sh;
 }
 
@@ -240,6 +236,9 @@ void demux_add_sh_stream(struct demuxer *demuxer, struct sh_stream *sh)
         .type = sh->type,
         .selected = in->autoselect,
     };
+
+    if (!sh->codec->codec)
+        sh->codec->codec = "";
 
     sh->index = in->num_streams;
     if (sh->ff_index < 0)
@@ -738,22 +737,6 @@ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
     return r;
 }
 
-// Return the pts of the next packet that demux_read_packet() would return.
-// Might block. Sometimes used to force a packet read, without removing any
-// packets from the queue.
-double demux_get_next_pts(struct sh_stream *sh)
-{
-    double res = MP_NOPTS_VALUE;
-    if (sh) {
-        pthread_mutex_lock(&sh->ds->in->lock);
-        ds_get_packets(sh->ds);
-        if (sh->ds->head)
-            res = MP_ADD_PTS(sh->ds->head->pts, sh->ds->in->ts_offset);
-        pthread_mutex_unlock(&sh->ds->in->lock);
-    }
-    return res;
-}
-
 // Return whether a packet is queued. Never blocks, never forces any reads.
 bool demux_has_packet(struct sh_stream *sh)
 {
@@ -871,11 +854,11 @@ static void apply_replaygain(demuxer_t *demuxer, struct replaygain_data *rg)
     struct demux_internal *in = demuxer->in;
     for (int n = 0; n < in->num_streams; n++) {
         struct sh_stream *sh = in->streams[n];
-        if (sh->audio && !sh->audio->replaygain_data) {
+        if (sh->type == STREAM_AUDIO && !sh->codec->replaygain_data) {
             MP_VERBOSE(demuxer, "Replaygain: Track=%f/%f Album=%f/%f\n",
                        rg->track_gain, rg->track_peak,
                        rg->album_gain, rg->album_peak);
-            sh->audio->replaygain_data = talloc_memdup(in, rg, sizeof(*rg));
+            sh->codec->replaygain_data = talloc_memdup(in, rg, sizeof(*rg));
         }
     }
 }

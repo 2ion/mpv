@@ -24,7 +24,7 @@
 #include <libavutil/avutil.h>
 
 #include "config.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 
 #include "osdep/io.h"
 #include "osdep/terminal.h"
@@ -134,7 +134,7 @@ static void print_stream(struct MPContext *mpctx, struct track *t)
         APPEND(b, " [P]");
     if (t->title)
         APPEND(b, " '%s'", t->title);
-    const char *codec = s ? s->codec : NULL;
+    const char *codec = s ? s->codec->codec : NULL;
     APPEND(b, " (%s)", codec ? codec : "<unknown>");
     if (t->is_external)
         APPEND(b, " (external)");
@@ -235,9 +235,10 @@ void reselect_demux_streams(struct MPContext *mpctx)
                 need_init_seek(track->demuxer);
             demuxer_select_track(track->demuxer, track->stream, track->selected);
             if (need_init) {
-                double pts = get_main_demux_pts(mpctx);
-                if (pts != MP_NOPTS_VALUE)
-                    demux_seek(track->demuxer, pts, SEEK_ABSOLUTE);
+                double pts = get_current_time(mpctx);
+                if (pts == MP_NOPTS_VALUE)
+                    pts = 0;
+                demux_seek(track->demuxer, pts, SEEK_ABSOLUTE);
             }
         }
     }
@@ -1043,7 +1044,6 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->paused = false;
     mpctx->paused_for_cache = false;
     mpctx->playing_msg_shown = false;
-    mpctx->backstep_active = false;
     mpctx->max_frames = -1;
     mpctx->video_speed = mpctx->audio_speed = opts->playback_speed;
     mpctx->speed_factor_a = mpctx->speed_factor_v = 1.0;

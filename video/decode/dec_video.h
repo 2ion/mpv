@@ -31,8 +31,6 @@ struct dec_video {
     struct mp_log *log;
     struct mpv_global *global;
     struct MPOpts *opts;
-    struct vf_chain *vfilter;  // video filter chain
-    struct vo *vo;  // (still) needed by video_set/get_colors
     const struct vd_functions *vd_driver;
     struct mp_hwdec_info *hwdec_info; // video output hwdec handles
     struct sh_stream *header;
@@ -69,6 +67,8 @@ struct dec_video {
     double decoded_pts;
 
     float fps;            // FPS from demuxer or from user override
+
+    struct mp_image_params last_format, fixed_format;
     float initial_decoder_aspect;
 
     // State used only by player/video.c
@@ -85,14 +85,8 @@ struct mp_image *video_decode(struct dec_video *d_video,
                               struct demux_packet *packet,
                               int drop_frame);
 
-int video_get_colors(struct dec_video *d_video, const char *item, int *value);
-int video_set_colors(struct dec_video *d_video, const char *item, int value);
-void video_reset_decoding(struct dec_video *d_video);
 int video_vd_control(struct dec_video *d_video, int cmd, void *arg);
-
-int video_reconfig_filters(struct dec_video *d_video,
-                           const struct mp_image_params *params);
-
-int video_vf_vo_control(struct dec_video *d_video, int vf_cmd, void *data);
+void video_reset_decoding(struct dec_video *d_video);
+void video_reset_aspect(struct dec_video *d_video);
 
 #endif /* MPLAYER_DEC_VIDEO_H */

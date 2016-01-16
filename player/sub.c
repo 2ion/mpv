@@ -22,7 +22,7 @@
 #include <assert.h>
 
 #include "config.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 
 #include "common/msg.h"
 #include "options/options.h"
@@ -77,8 +77,8 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts, int order
     if (!track || !dec_sub || video_pts == MP_NOPTS_VALUE)
         return true;
 
-    if (mpctx->d_video) {
-        struct mp_image_params params = mpctx->d_video->vfilter->override_params;
+    if (mpctx->vo_chain) {
+        struct mp_image_params params = mpctx->vo_chain->vf->input_params;
         if (params.imgfmt)
             sub_control(dec_sub, SD_CTRL_SET_VIDEO_PARAMS, &params);
     }
@@ -118,9 +118,9 @@ static bool init_subdec(struct MPContext *mpctx, struct track *track)
     if (!track->dec_sub)
         return false;
 
-    struct sh_video *sh_video =
-        mpctx->d_video ? mpctx->d_video->header->video : NULL;
-    double fps = sh_video ? sh_video->fps : 25;
+    struct mp_codec_params *v_c =
+        mpctx->d_video ? mpctx->d_video->header->codec : NULL;
+    double fps = v_c ? v_c->fps : 25;
     sub_control(track->dec_sub, SD_CTRL_SET_VIDEO_DEF_FPS, &fps);
 
     // Don't do this if the file has video/audio streams. Don't do it even

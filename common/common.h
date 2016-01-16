@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #include "osdep/compiler.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 
 // double should be able to represent this exactly
 #define MP_NOPTS_VALUE (-0x1p+63)
@@ -89,5 +89,8 @@ bool mp_append_escaped_string(void *talloc_ctx, struct bstr *dst,
 
 char *mp_strerror_buf(char *buf, size_t buf_size, int errnum);
 #define mp_strerror(e) mp_strerror_buf((char[80]){0}, 80, e)
+
+char *mp_tag_str_buf(char *buf, size_t buf_size, uint32_t tag);
+#define mp_tag_str(t) mp_tag_str_buf((char[22]){0}, 22, t)
 
 #endif /* MPLAYER_MPCOMMON_H */
