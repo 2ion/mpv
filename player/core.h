@@ -27,6 +27,7 @@
 #include "options/options.h"
 #include "sub/osd.h"
 #include "demux/timeline.h"
+#include "video/mp_image.h"
 #include "video/out/vo.h"
 
 // definitions used internally by the core player code
@@ -141,7 +142,10 @@ struct track {
     struct sh_stream *stream;
 
     // Current subtitle state (or cached state if selected==false).
-    struct dec_sub *dec_sub;
+    struct dec_sub *d_sub;
+
+    // Current video decoding state (NULL if selected==false)
+    struct dec_video *d_video;
 
     // For external subtitles, which are read fully on init. Do not attempt
     // to read packets from them.
@@ -152,8 +156,19 @@ struct track {
 struct vo_chain {
     struct mp_log *log;
 
+    struct mp_hwdec_info *hwdec_info;
+    double container_fps;
+
     struct vf_chain *vf;
     struct vo *vo;
+
+    // 1-element input frame queue.
+    struct mp_image *input_mpi;
+
+    // Last known input_mpi format (so vf can be reinitialized any time).
+    struct mp_image_params input_format;
+
+    struct dec_video *video_src;
 };
 
 /* Note that playback can be paused, stopped, etc. at any time. While paused,
@@ -252,9 +267,7 @@ typedef struct MPContext {
     // Currently, this is used for the secondary subtitle track only.
     struct track *current_track[NUM_PTRACKS][STREAM_TYPE_COUNT];
 
-    struct dec_video *d_video;
     struct dec_audio *d_audio;
-    struct dec_sub *d_sub[2];
 
     // Uses: accessing metadata (consider ordered chapters case, where the main
     // demuxer defines metadata), or special purpose demuxers like TV.
@@ -308,10 +321,8 @@ typedef struct MPContext {
     // How much video timing has been changed to make it match the audio
     // timeline. Used for status line information only.
     double total_avsync_change;
-    // Total number of dropped frames that were dropped by decoder.
-    int dropped_frames_total;
-    // Number of frames dropped in a row.
-    int dropped_frames;
+    // Used to compute the number of frames dropped in a row.
+    int dropped_frames_start;
     // A-V sync difference when last frame was displayed. Kept to display
     // the same value if the status line is updated at a time where no new
     // video frame is shown.
@@ -512,8 +523,9 @@ void mp_load_scripts(struct MPContext *mpctx);
 
 // sub.c
 void reset_subtitle_state(struct MPContext *mpctx);
-void reinit_subs(struct MPContext *mpctx, int order);
-void uninit_sub(struct MPContext *mpctx, int order);
+void reinit_sub(struct MPContext *mpctx, struct track *track);
+void reinit_sub_all(struct MPContext *mpctx);
+void uninit_sub(struct MPContext *mpctx, struct track *track);
 void uninit_sub_all(struct MPContext *mpctx);
 void update_osd_msg(struct MPContext *mpctx);
 bool update_subtitles(struct MPContext *mpctx, double video_pts);
