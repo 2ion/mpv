@@ -713,7 +713,11 @@ video_output_features = [
         'desc': 'VAAPI (Wayland support)',
         'deps': [ 'vaapi', 'gl-wayland' ],
         'func': check_pkg_config('libva-wayland', '>= 0.36.0'),
-
+    }, {
+        'name': '--vaapi-drm',
+        'desc': 'VAAPI (DRM/EGL support)',
+        'deps': [ 'vaapi', 'egl-drm' ],
+        'func': check_pkg_config('libva-drm', '>= 0.36.0'),
     }, {
         'name': '--vaapi-glx',
         'desc': 'VAAPI GLX',
@@ -915,7 +919,7 @@ def options(opt):
     group.add_option('--lua',
         type    = 'string',
         dest    = 'LUA_VER',
-        help    = "select Lua package which should be autodetected. Choices: 51 51deb 51fbsd 52 52deb 52arch 52fbsd luajit")
+        help    = "select Lua package which should be autodetected. Choices: 51 51deb 51obsd 51fbsd 52 52deb 52arch 52fbsd luajit")
 
 @conf
 def is_optimization(ctx):

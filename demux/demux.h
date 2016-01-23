@@ -160,7 +160,6 @@ struct demuxer_params {
     struct matroska_segment_uid *matroska_wanted_uids;
     int matroska_wanted_segment;
     bool *matroska_was_valid;
-    bool expect_subtitle;
     // -- demux_open_url() only
     int stream_flags;
     bool allow_capture;
@@ -238,6 +237,7 @@ void free_demuxer(struct demuxer *demuxer);
 void free_demuxer_and_stream(struct demuxer *demuxer);
 
 void demux_add_packet(struct sh_stream *stream, demux_packet_t *dp);
+void demuxer_feed_caption(struct sh_stream *stream, demux_packet_t *dp);
 
 struct demux_packet *demux_read_packet(struct sh_stream *sh);
 int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt);
@@ -273,8 +273,6 @@ void demux_set_ts_offset(struct demuxer *demuxer, double offset);
 
 int demux_control(struct demuxer *demuxer, int cmd, void *arg);
 
-void demuxer_switch_track(struct demuxer *demuxer, enum stream_type type,
-                          struct sh_stream *stream);
 void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
                           bool selected);
 void demux_set_stream_autoselect(struct demuxer *demuxer, bool autoselect);

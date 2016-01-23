@@ -27,6 +27,7 @@
 #include "options/options.h"
 #include "sub/osd.h"
 #include "demux/timeline.h"
+#include "audio/audio.h"
 #include "video/mp_image.h"
 #include "video/out/vo.h"
 
@@ -144,8 +145,9 @@ struct track {
     // Current subtitle state (or cached state if selected==false).
     struct dec_sub *d_sub;
 
-    // Current video decoding state (NULL if selected==false)
+    // Current decoding state (NULL if selected==false)
     struct dec_video *d_video;
+    struct dec_audio *d_audio;
 
     // For external subtitles, which are read fully on init. Do not attempt
     // to read packets from them.
@@ -169,6 +171,26 @@ struct vo_chain {
     struct mp_image_params input_format;
 
     struct dec_video *video_src;
+};
+
+// Like vo_chain, for audio.
+struct ao_chain {
+    struct mp_log *log;
+
+    double pts; // timestamp of first sample output by decoder
+    bool spdif_passthrough, spdif_failed;
+
+    struct af_stream *af;
+    struct ao *ao;
+    struct mp_audio_buffer *ao_buffer;
+
+    // 1-element input frame queue.
+    struct mp_audio *input_frame;
+
+    // Last known input_mpi format (so vf can be reinitialized any time).
+    struct mp_audio input_format;
+
+    struct dec_audio *audio_src;
 };
 
 /* Note that playback can be paused, stopped, etc. at any time. While paused,
@@ -267,8 +289,6 @@ typedef struct MPContext {
     // Currently, this is used for the secondary subtitle track only.
     struct track *current_track[NUM_PTRACKS][STREAM_TYPE_COUNT];
 
-    struct dec_audio *d_audio;
-
     // Uses: accessing metadata (consider ordered chapters case, where the main
     // demuxer defines metadata), or special purpose demuxers like TV.
     struct demuxer *master_demuxer;
@@ -277,7 +297,7 @@ typedef struct MPContext {
     struct mixer *mixer;
     struct ao *ao;
     struct mp_audio *ao_decoder_fmt; // for weak gapless audio check
-    struct mp_audio_buffer *ao_buffer;  // queued audio; passed to ao_play() later
+    struct ao_chain *ao_chain;
 
     struct vo_chain *vo_chain;
 
@@ -465,7 +485,6 @@ void wakeup_playloop(void *ctx);
 // misc.c
 double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t);
 double get_play_end_pts(struct MPContext *mpctx);
-double get_relative_time(struct MPContext *mpctx);
 void merge_playlist_files(struct playlist *pl);
 float mp_get_cache_percent(struct MPContext *mpctx);
 bool mp_get_cache_idle(struct MPContext *mpctx);
@@ -490,6 +509,7 @@ void set_osd_bar_chapters(struct MPContext *mpctx, int type);
 // playloop.c
 void mp_wait_events(struct MPContext *mpctx, double sleeptime);
 void mp_process_input(struct MPContext *mpctx);
+double get_relative_time(struct MPContext *mpctx);
 void reset_playback_state(struct MPContext *mpctx);
 void pause_player(struct MPContext *mpctx);
 void unpause_player(struct MPContext *mpctx);

@@ -280,11 +280,7 @@ void uninit_video_out(struct MPContext *mpctx)
 static void vo_chain_uninit(struct vo_chain *vo_c)
 {
     mp_image_unrefp(&vo_c->input_mpi);
-    if (vo_c) {
-        vf_destroy(vo_c->vf);
-        if (vo_c->video_src)
-            video_uninit(vo_c->video_src);
-    }
+    vf_destroy(vo_c->vf);
     talloc_free(vo_c);
     // this does not free the VO
 }
@@ -292,7 +288,16 @@ static void vo_chain_uninit(struct vo_chain *vo_c)
 void uninit_video_chain(struct MPContext *mpctx)
 {
     if (mpctx->vo_chain) {
+        struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+        assert(track);
+        assert(track->d_video == mpctx->vo_chain->video_src);
+
         reset_video_state(mpctx);
+
+        video_uninit(track->d_video);
+        track->d_video = NULL;
+        mpctx->vo_chain->video_src = NULL;
+
         vo_chain_uninit(mpctx->vo_chain);
         mpctx->vo_chain = NULL;
         mpctx->video_status = STATUS_EOF;
@@ -377,7 +382,7 @@ int reinit_video_chain(struct MPContext *mpctx)
     mpctx->sync_audio_to_video = !sh->attached_picture;
 
     // If we switch on video again, ensure audio position matches up.
-    if (mpctx->d_audio)
+    if (mpctx->ao_chain)
         mpctx->audio_status = STATUS_SYNCING;
 
     reset_video_state(mpctx);
@@ -889,8 +894,8 @@ static double find_best_speed(struct MPContext *mpctx, double vsync)
 
 static bool using_spdif_passthrough(struct MPContext *mpctx)
 {
-    if (mpctx->d_audio && mpctx->d_audio->afilter)
-        return !af_fmt_is_pcm(mpctx->d_audio->afilter->input.format);
+    if (mpctx->ao_chain)
+        return !af_fmt_is_pcm(mpctx->ao_chain->input_format.format);
     return false;
 }
 
@@ -1137,8 +1142,9 @@ static void calculate_frame_duration(struct MPContext *mpctx)
         if (pts0 != MP_NOPTS_VALUE && pts1 != MP_NOPTS_VALUE && pts1 >= pts0)
             duration = pts1 - pts0;
     } else {
-        // E.g. last frame on EOF.
-        duration = demux_duration;
+        // E.g. last frame on EOF. Only use it if it's significant.
+        if (demux_duration >= 0.1)
+            duration = demux_duration;
     }
 
     // The following code tries to compensate for rounded Matroska timestamps
@@ -1202,8 +1208,11 @@ void write_video(struct MPContext *mpctx, double endpts)
 
     if (r == VD_EOF) {
         int prev_state = mpctx->video_status;
-        mpctx->video_status =
-            vo_still_displaying(vo) ? STATUS_DRAINING : STATUS_EOF;
+        mpctx->video_status = STATUS_EOF;
+        if (mpctx->num_past_frames > 0 && mpctx->past_frames[0].duration > 0) {
+            if (vo_still_displaying(vo))
+                mpctx->video_status = STATUS_DRAINING;
+        }
         mpctx->delay = 0;
         mpctx->last_av_difference = 0;
         MP_DBG(mpctx, "video EOF (status=%d)\n", mpctx->video_status);

@@ -3,18 +3,18 @@
  *
  * Original author: Jonathan Yong <10walls@gmail.com>
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <math.h>
@@ -749,7 +749,7 @@ struct enumerator {
     struct mp_log *log;
     IMMDeviceEnumerator *pEnumerator;
     IMMDeviceCollection *pDevices;
-    int count;
+    UINT count;
 };
 
 static void destroy_enumerator(struct enumerator *e)
@@ -784,7 +784,7 @@ exit_label:
     return NULL;
 }
 
-static struct device_desc *device_desc_for_num(struct enumerator *e, int i)
+static struct device_desc *device_desc_for_num(struct enumerator *e, UINT i)
 {
     IMMDevice *pDevice = NULL;
     HRESULT hr = IMMDeviceCollection_Item(e->pDevices, i, &pDevice);
@@ -818,7 +818,7 @@ void wasapi_list_devs(struct ao *ao, struct ao_device_list *list)
     if (!enumerator)
         return;
 
-    for (int i = 0; i < enumerator->count; i++) {
+    for (UINT i = 0; i < enumerator->count; i++) {
         struct device_desc *d = device_desc_for_num(enumerator, i);
         if (!d)
             goto exit_label;
@@ -873,6 +873,11 @@ LPWSTR find_deviceID(struct ao *ao)
     if (!enumerator)
         goto exit_label;
 
+    if (!enumerator->count) {
+        MP_ERR(ao, "There are no playback devices available\n");
+        goto exit_label;
+    }
+
     if (!device.len) {
         MP_VERBOSE(ao, "No device specified. Selecting default.\n");
         d = default_device_desc(enumerator);
@@ -883,7 +888,7 @@ LPWSTR find_deviceID(struct ao *ao)
     // try selecting by number
     bstr rest;
     long long devno = bstrtoll(device, &rest, 10);
-    if (!rest.len && 0 <= devno && devno < enumerator->count) {
+    if (!rest.len && 0 <= devno && devno < (long long)enumerator->count) {
         MP_VERBOSE(ao, "Selecting device by number: #%lld\n", devno);
         d = device_desc_for_num(enumerator, devno);
         deviceID = select_device(ao->log, d);
@@ -892,7 +897,7 @@ LPWSTR find_deviceID(struct ao *ao)
 
     // select by id or name
     bstr_eatstart0(&device, "{0.0.0.00000000}.");
-    for (int i = 0; i < enumerator->count; i++) {
+    for (UINT i = 0; i < enumerator->count; i++) {
         d = device_desc_for_num(enumerator, i);
         if (!d)
             goto exit_label;

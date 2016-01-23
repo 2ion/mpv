@@ -536,7 +536,7 @@ static int mp_property_avsync(void *ctx, struct m_property *prop,
                               int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    if (!mpctx->d_audio || !mpctx->vo_chain)
+    if (!mpctx->ao_chain || !mpctx->vo_chain)
         return M_PROPERTY_UNAVAILABLE;
     if (action == M_PROPERTY_PRINT) {
         *(char **)arg = talloc_asprintf(NULL, "%7.3f", mpctx->last_av_difference);
@@ -549,7 +549,7 @@ static int mp_property_total_avsync_change(void *ctx, struct m_property *prop,
                                            int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    if (!mpctx->d_audio || !mpctx->vo_chain)
+    if (!mpctx->ao_chain || !mpctx->vo_chain)
         return M_PROPERTY_UNAVAILABLE;
     if (mpctx->total_avsync_change == MP_NOPTS_VALUE)
         return M_PROPERTY_UNAVAILABLE;
@@ -1242,9 +1242,9 @@ static int mp_property_filter_metadata(void *ctx, struct m_property *prop,
             struct vf_chain *vf = mpctx->vo_chain->vf;
             res = vf_control_by_label(vf, VFCTRL_GET_METADATA, &metadata, key);
         } else if (strcmp(type, "af") == 0) {
-            if (!(mpctx->d_audio && mpctx->d_audio->afilter))
+            if (!(mpctx->ao_chain && mpctx->ao_chain->af))
                 return M_PROPERTY_UNAVAILABLE;
-            struct af_stream *af = mpctx->d_audio->afilter;
+            struct af_stream *af = mpctx->ao_chain->af;
             res = af_control_by_label(af, AF_CONTROL_GET_METADATA, &metadata, key);
         }
         switch (res) {
@@ -1696,7 +1696,7 @@ static int mp_property_audio_delay(void *ctx, struct m_property *prop,
                                    int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    if (!(mpctx->d_audio && mpctx->vo_chain))
+    if (!(mpctx->ao_chain && mpctx->vo_chain))
         return M_PROPERTY_UNAVAILABLE;
     float delay = mpctx->opts->audio_delay;
     switch (action) {
@@ -1716,7 +1716,8 @@ static int mp_property_audio_codec_name(void *ctx, struct m_property *prop,
                                         int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    const char *c = mpctx->d_audio ? mpctx->d_audio->header->codec->codec : NULL;
+    struct track *track = mpctx->current_track[0][STREAM_AUDIO];
+    const char *c = track && track->stream ? track->stream->codec->codec : NULL;
     return m_property_strdup_ro(action, arg, c);
 }
 
@@ -1725,7 +1726,8 @@ static int mp_property_audio_codec(void *ctx, struct m_property *prop,
                                    int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    const char *c = mpctx->d_audio ? mpctx->d_audio->decoder_desc : NULL;
+    struct track *track = mpctx->current_track[0][STREAM_AUDIO];
+    const char *c = track && track->d_audio ? track->d_audio->decoder_desc : NULL;
     return m_property_strdup_ro(action, arg, c);
 }
 
@@ -1751,8 +1753,8 @@ static int mp_property_audio_params(void *ctx, struct m_property *prop,
 {
     MPContext *mpctx = ctx;
     struct mp_audio fmt = {0};
-    if (mpctx->d_audio)
-        fmt = mpctx->d_audio->decode_format;
+    if (mpctx->ao_chain)
+        fmt = mpctx->ao_chain->input_format;
     return property_audiofmt(fmt, action, arg);
 }
 
@@ -2438,7 +2440,7 @@ static int mp_property_video_codec(void *ctx, struct m_property *prop,
 {
     MPContext *mpctx = ctx;
     struct track *track = mpctx->current_track[0][STREAM_VIDEO];
-    const char *c = track->d_video ? track->d_video->decoder_desc : NULL;
+    const char *c = track && track->d_video ? track->d_video->decoder_desc : NULL;
     return m_property_strdup_ro(action, arg, c);
 }
 
@@ -4928,6 +4930,18 @@ int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *re
     case MP_CMD_VF:
         return edit_filters_osd(mpctx, STREAM_VIDEO, cmd->args[0].v.s,
                                 cmd->args[1].v.s, msg_osd);
+
+    case MP_CMD_VF_COMMAND:
+        if (!mpctx->vo_chain)
+            return -1;
+        return vf_send_command(mpctx->vo_chain->vf, cmd->args[0].v.s,
+                               cmd->args[1].v.s, cmd->args[2].v.s);
+
+    case MP_CMD_AF_COMMAND:
+        if (!mpctx->ao_chain)
+            return -1;
+        return af_send_command(mpctx->ao_chain->af, cmd->args[0].v.s,
+                               cmd->args[1].v.s, cmd->args[2].v.s);
 
     case MP_CMD_SCRIPT_BINDING: {
         mpv_event_client_message event = {0};

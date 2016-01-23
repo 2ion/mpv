@@ -312,7 +312,10 @@ bool timeline_switch_to_time(struct MPContext *mpctx, double pts)
 
     if (mpctx->demuxer) {
         demux_stop_thread(mpctx->demuxer);
-        demux_flush(mpctx->demuxer);
+        for (int i = 0; i < demux_get_num_stream(mpctx->demuxer); i++) {
+            struct sh_stream *sh = demux_get_stream(mpctx->demuxer, i);
+            demuxer_select_track(mpctx->demuxer, sh, false);
+        }
     }
 
     mpctx->demuxer = n->source;
@@ -693,9 +696,7 @@ struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
     if (strncmp(disp_filename, "memory://", 9) == 0)
         disp_filename = "memory://"; // avoid noise
 
-    struct demuxer_params params = {
-        .expect_subtitle = filter == STREAM_SUB,
-    };
+    struct demuxer_params params = {0};
 
     switch (filter) {
     case STREAM_SUB:

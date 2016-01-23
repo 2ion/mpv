@@ -560,9 +560,13 @@ Video
 
 ``--display-fps=<fps>``
     Set the display FPS used with the ``--video-sync=display-*`` modes. By
-    default, a detected value is used (X11 only, not correct on multi-monitor
-    systems). Keep in mind that setting an incorrect value (even if slightly
-    incorrect) can ruin video playback.
+    default, a detected value is used. Keep in mind that setting an incorrect
+    value (even if slightly incorrect) can ruin video playback. On multi-monitor
+    systems, there is a chance that the detected value is from the wrong
+    monitor.
+
+    Set this option only if you have reason to believe the automatically
+    determined value is wrong.
 
 ``--hwdec=<api>``
     Specify the hardware video decoding API that should be used if possible.
@@ -1089,8 +1093,8 @@ Audio
         This and enabling passthrough via ``--ad`` are deprecated in favor of
         using ``--audio-spdif=dts-hd``.
 
-``--audio-channels=<number|layout>``
-    Request a channel layout for audio output (default: auto). This  will ask
+``--audio-channels=<auto|number|layout>``
+    Request a channel layout for audio output (default: stereo). This  will ask
     the AO to open a device with the given channel layout. It's up to the AO
     to accept this layout, or to pick a fallback or to error out if the
     requested layout is not supported.
@@ -1103,9 +1107,10 @@ Audio
     lists speaker names, which can be used to express arbitrary channel
     layouts (e.g. ``fl-fr-lfe`` is 2.1).
 
-    The default is ``--audio-channels=auto``, which tries to play audio using
-    the input file's channel layout. (Or more precisely, the output of the
-    audio filter chain.) (``empty`` is an accepted obsolete alias for ``auto``.)
+    ``--audio-channels=auto`` tries to play audio using the input file's
+    channel layout. There is no guarantee that the audio API handles this
+    correctly. See the HDMI warning below.
+    (``empty`` is an accepted obsolete alias for ``auto``.)
 
     This will also request the channel layout from the decoder. If the decoder
     does not support the layout, it will fall back to its native channel layout.
@@ -1123,6 +1128,16 @@ Audio
         the receiver does not support them. If a receiver gets an unsupported
         channel layout, random things can happen, such as dropping the
         additional channels, or adding noise.
+
+``--audio-normalize-downmix=<yes|no>``
+    Enable/disable normalization if surround audio is downmixed to stereo
+    (default: no). If this is disabled, downmix can cause clipping. If it's
+    enabled, the output might be too silent. It depends on the source audio.
+
+    Technically, this changes the ``normalize`` suboption of the
+    ``lavrresample`` audio filter, which performs the downmixing.
+
+    If downmix happens outside of mpv for some reason, this has no effect.
 
 ``--audio-display=<no|attachment>``
     Setting this option to ``attachment`` (default) will display image
