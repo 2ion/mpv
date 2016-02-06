@@ -155,10 +155,7 @@ void audio_uninit(struct dec_audio *d_audio)
 {
     if (!d_audio)
         return;
-    MP_VERBOSE(d_audio, "Uninit audio filters...\n");
     uninit_decoder(d_audio);
-    talloc_free(d_audio->current_frame);
-    talloc_free(d_audio->packet);
     talloc_free(d_audio);
 }
 
@@ -167,7 +164,6 @@ void audio_reset_decoding(struct dec_audio *d_audio)
     if (d_audio->ad_driver)
         d_audio->ad_driver->control(d_audio, ADCTRL_RESET, NULL);
     d_audio->pts = MP_NOPTS_VALUE;
-    d_audio->pts_reset = false;
     talloc_free(d_audio->current_frame);
     d_audio->current_frame = NULL;
     talloc_free(d_audio->packet);
@@ -183,17 +179,8 @@ static void fix_audio_pts(struct dec_audio *da)
         double newpts = da->current_frame->pts;
         // Keep the interpolated timestamp if it doesn't deviate more
         // than 1 ms from the real one. (MKV rounded timestamps.)
-        if (da->pts == MP_NOPTS_VALUE || fabs(da->pts - newpts) > 0.001) {
-            // Attempt to detect jumps in PTS. Even for the lowest
-            // sample rates and with worst container rounded timestamp,
-            // this should be a margin more than enough.
-            if (da->pts != MP_NOPTS_VALUE && fabs(newpts - da->pts) > 0.1) {
-                MP_WARN(da, "Invalid audio PTS: %f -> %f\n",
-                        da->pts, newpts);
-                da->pts_reset = true;
-            }
+        if (da->pts == MP_NOPTS_VALUE || fabs(da->pts - newpts) > 0.001)
             da->pts = da->current_frame->pts;
-        }
     }
 
     if (da->pts == MP_NOPTS_VALUE && da->header->missing_timestamps)
@@ -211,7 +198,7 @@ void audio_work(struct dec_audio *da)
         return;
 
     if (!da->packet && demux_read_packet_async(da->header, &da->packet) == 0) {
-        da->current_state = AUDIO_WAIT;
+        da->current_state = DATA_WAIT;
         return;
     }
 
@@ -228,30 +215,30 @@ void audio_work(struct dec_audio *da)
         da->current_frame = NULL;
     }
 
-    da->current_state = AUDIO_OK;
+    da->current_state = DATA_OK;
     if (!da->current_frame) {
-        da->current_state = AUDIO_EOF;
+        da->current_state = DATA_EOF;
         if (had_packet)
-            da->current_state = AUDIO_SKIP;
+            da->current_state = DATA_AGAIN;
     }
 
     fix_audio_pts(da);
 }
 
 // Fetch an audio frame decoded with audio_work(). Returns one of:
-//  AUDIO_OK:   *out_frame is set to a new image
-//  AUDIO_WAIT: waiting for demuxer; will receive a wakeup signal
-//  AUDIO_EOF:  end of file, no more frames to be expected
-//  AUDIO_SKIP: dropped frame or something similar
+//  DATA_OK:    *out_frame is set to a new image
+//  DATA_WAIT:  waiting for demuxer; will receive a wakeup signal
+//  DATA_EOF:   end of file, no more frames to be expected
+//  DATA_AGAIN: dropped frame or something similar
 int audio_get_frame(struct dec_audio *da, struct mp_audio **out_frame)
 {
     *out_frame = NULL;
     if (da->current_frame) {
         *out_frame = da->current_frame;
         da->current_frame = NULL;
-        return AUDIO_OK;
+        return DATA_OK;
     }
-    if (da->current_state == AUDIO_OK)
-        return AUDIO_SKIP;
+    if (da->current_state == DATA_OK)
+        return DATA_AGAIN;
     return da->current_state;
 }

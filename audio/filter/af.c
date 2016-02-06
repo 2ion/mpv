@@ -47,7 +47,6 @@ extern const struct af_info af_info_lavcac3enc;
 extern const struct af_info af_info_lavrresample;
 extern const struct af_info af_info_sweep;
 extern const struct af_info af_info_hrtf;
-extern const struct af_info af_info_ladspa;
 extern const struct af_info af_info_center;
 extern const struct af_info af_info_sinesuppress;
 extern const struct af_info af_info_karaoke;
@@ -72,9 +71,6 @@ static const struct af_info *const filter_list[] = {
     &af_info_lavrresample,
     &af_info_sweep,
     &af_info_hrtf,
-#if HAVE_LADSPA
-    &af_info_ladspa,
-#endif
 #if HAVE_RUBBERBAND
     &af_info_rubberband,
 #endif
@@ -85,9 +81,7 @@ static const struct af_info *const filter_list[] = {
 #if HAVE_LIBBS2B
     &af_info_bs2b,
 #endif
-#if HAVE_LIBAVFILTER
     &af_info_lavfi,
-#endif
     NULL
 };
 

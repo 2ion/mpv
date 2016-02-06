@@ -226,6 +226,8 @@ const m_option_t mp_opts[] = {
     OPT_STRINGLIST("alang", stream_lang[STREAM_AUDIO], 0),
     OPT_STRINGLIST("slang", stream_lang[STREAM_SUB], 0),
 
+    OPT_STRING("lavfi-complex", lavfi_complex, 0),
+
     OPT_CHOICE("audio-display", audio_display, 0,
                ({"no", 0}, {"attachment", 1})),
 
@@ -680,7 +682,7 @@ const struct MPOpts mp_default_opts = {
     .use_terminal = 1,
     .msg_color = 1,
     .audio_driver_list = NULL,
-    .audio_decoders = "lavc:libdcadec,-spdif:*", // never select spdif by default
+    .audio_decoders = "-spdif:*", // never select spdif by default
     .video_decoders = NULL,
     .deinterlace = -1,
     .softvol = SOFTVOL_AUTO,
@@ -819,10 +821,6 @@ const struct MPOpts mp_default_opts = {
     .dvd_angle = 1,
 
     .mf_fps = 1.0,
-
-#if HAVE_RPI
-    .hwdec_api = -1,
-#endif
 
     .display_tags = (char **)(const char*[]){
         "Artist", "Album", "Album_Artist", "Comment", "Composer", "Genre",

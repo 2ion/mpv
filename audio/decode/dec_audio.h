@@ -36,9 +36,6 @@ struct dec_audio {
 
     bool try_spdif;
 
-    // set every time a jump in timestamps is encountered
-    bool pts_reset;
-
     // For free use by the ad_driver
     void *priv;
 
@@ -55,11 +52,6 @@ int audio_init_best_codec(struct dec_audio *d_audio);
 void audio_uninit(struct dec_audio *d_audio);
 
 void audio_work(struct dec_audio *d_audio);
-
-#define AUDIO_OK 1
-#define AUDIO_WAIT 0
-#define AUDIO_EOF -1
-#define AUDIO_SKIP -2
 int audio_get_frame(struct dec_audio *d_audio, struct mp_audio **out_frame);
 
 void audio_reset_decoding(struct dec_audio *d_audio);

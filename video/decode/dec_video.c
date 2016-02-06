@@ -67,7 +67,7 @@ void video_reset(struct dec_video *d_video)
     d_video->codec_dts = MP_NOPTS_VALUE;
     d_video->last_format = d_video->fixed_format = (struct mp_image_params){0};
     d_video->dropped_frames = 0;
-    d_video->current_state = VIDEO_SKIP;
+    d_video->current_state = DATA_AGAIN;
     mp_image_unrefp(&d_video->current_mpi);
 }
 
@@ -285,9 +285,6 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
     if (avi_pts)
         add_avi_pts(d_video, pkt_pdts);
 
-    double prev_codec_pts = d_video->codec_pts;
-    double prev_codec_dts = d_video->codec_dts;
-
     if (d_video->header->codec->avi_dts)
         drop_frame = 0;
 
@@ -297,9 +294,13 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
 
     MP_STATS(d_video, "end decode video");
 
+    // Error, discarded frame, dropped frame, or initial codec delay.
     if (!mpi || drop_frame) {
+        // If we already had output, this must be a dropped frame.
+        if (d_video->decoded_pts != MP_NOPTS_VALUE && d_video->num_buffered_pts)
+            d_video->num_buffered_pts--;
         talloc_free(mpi);
-        return NULL;            // error / skipped frame
+        return NULL;
     }
 
     if (opts->field_dominance == 0) {
@@ -313,18 +314,16 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
     double pts = mpi->pts;
     double dts = mpi->dts;
 
-    if (pts == MP_NOPTS_VALUE) {
-        d_video->codec_pts = prev_codec_pts;
-    } else if (pts < prev_codec_pts) {
+    if (pts != MP_NOPTS_VALUE) {
+        if (pts < d_video->codec_pts)
+            d_video->num_codec_pts_problems++;
         d_video->codec_pts = mpi->pts;
-        d_video->num_codec_pts_problems++;
     }
 
-    if (dts == MP_NOPTS_VALUE) {
-        d_video->codec_dts = prev_codec_dts;
-    } else if (dts <= prev_codec_dts) {
+    if (dts != MP_NOPTS_VALUE) {
+        if (dts <= d_video->codec_dts)
+            d_video->num_codec_dts_problems++;
         d_video->codec_dts = mpi->dts;
-        d_video->num_codec_dts_problems++;
     }
 
     // If PTS is unset, or non-monotonic, fall back to DTS.
@@ -387,24 +386,24 @@ void video_work(struct dec_video *d_video)
         return;
 
     if (d_video->header->attached_picture) {
-        if (d_video->current_state == VIDEO_SKIP && !d_video->cover_art_mpi) {
+        if (d_video->current_state == DATA_AGAIN && !d_video->cover_art_mpi) {
             d_video->cover_art_mpi =
                 decode_packet(d_video, d_video->header->attached_picture, 0);
             // Might need flush.
             if (!d_video->cover_art_mpi)
                 d_video->cover_art_mpi = decode_packet(d_video, NULL, 0);
-            d_video->current_state = VIDEO_OK;
+            d_video->current_state = DATA_OK;
         }
-        if (d_video->current_state == VIDEO_OK)
+        if (d_video->current_state == DATA_OK)
             d_video->current_mpi = mp_image_new_ref(d_video->cover_art_mpi);
-        // (VIDEO_OK is returned the first time, when current_mpi is sill set)
-        d_video->current_state = VIDEO_EOF;
+        // (DATA_OK is returned the first time, when current_mpi is sill set)
+        d_video->current_state = DATA_EOF;
         return;
     }
 
     struct demux_packet *pkt;
     if (demux_read_packet_async(d_video->header, &pkt) == 0) {
-        d_video->current_state = VIDEO_WAIT;
+        d_video->current_state = DATA_WAIT;
         return;
     }
 
@@ -419,31 +418,31 @@ void video_work(struct dec_video *d_video)
     bool had_packet = !!pkt;
     talloc_free(pkt);
 
-    d_video->current_state = VIDEO_OK;
+    d_video->current_state = DATA_OK;
     if (!d_video->current_mpi) {
-        d_video->current_state = VIDEO_EOF;
+        d_video->current_state = DATA_EOF;
         if (had_packet) {
             if (framedrop_type == 1)
                 d_video->dropped_frames += 1;
-            d_video->current_state = VIDEO_SKIP;
+            d_video->current_state = DATA_AGAIN;
         }
     }
 }
 
 // Fetch an image decoded with video_work(). Returns one of:
-//  VIDEO_OK:   *out_mpi is set to a new image
-//  VIDEO_WAIT: waiting for demuxer; will receive a wakeup signal
-//  VIDEO_EOF:  end of file, no more frames to be expected
-//  VIDEO_SKIP: dropped frame or something similar
+//  DATA_OK:    *out_mpi is set to a new image
+//  DATA_WAIT:  waiting for demuxer; will receive a wakeup signal
+//  DATA_EOF:   end of file, no more frames to be expected
+//  DATA_AGAIN: dropped frame or something similar
 int video_get_frame(struct dec_video *d_video, struct mp_image **out_mpi)
 {
     *out_mpi = NULL;
     if (d_video->current_mpi) {
         *out_mpi = d_video->current_mpi;
         d_video->current_mpi = NULL;
-        return VIDEO_OK;
+        return DATA_OK;
     }
-    if (d_video->current_state == VIDEO_OK)
-        return VIDEO_SKIP;
+    if (d_video->current_state == DATA_OK)
+        return DATA_AGAIN;
     return d_video->current_state;
 }

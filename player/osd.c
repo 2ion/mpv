@@ -217,7 +217,7 @@ static void print_status(struct MPContext *mpctx)
         saddf(&line, " x%4.2f", opts->playback_speed);
 
     // A-V sync
-    if (mpctx->ao_chain && mpctx->vo_chain && mpctx->sync_audio_to_video) {
+    if (mpctx->ao_chain && mpctx->vo_chain && !mpctx->vo_chain->is_coverart) {
         saddf(&line, " A-V:%7.3f", mpctx->last_av_difference);
         if (fabs(mpctx->total_avsync_change) > 0.05)
             saddf(&line, " ct:%7.3f", mpctx->total_avsync_change);
@@ -246,7 +246,8 @@ static void print_status(struct MPContext *mpctx)
                 talloc_free(r);
             }
             int64_t c = vo_get_drop_count(mpctx->video_out);
-            int dropped_frames = mpctx->vo_chain->video_src->dropped_frames;
+            struct dec_video *d_video = mpctx->vo_chain->video_src;
+            int dropped_frames = d_video ? d_video->dropped_frames : 0;
             if (c > 0 || dropped_frames > 0) {
                 saddf(&line, " Dropped: %"PRId64, c);
                 if (dropped_frames)

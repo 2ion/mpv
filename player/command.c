@@ -1820,27 +1820,18 @@ static int mp_property_balance(void *ctx, struct m_property *prop,
     return M_PROPERTY_NOT_IMPLEMENTED;
 }
 
-static struct track* track_next(struct MPContext *mpctx, int order,
-                                enum stream_type type, int direction,
-                                struct track *track)
+static struct track* track_next(struct MPContext *mpctx, enum stream_type type,
+                                int direction, struct track *track)
 {
     assert(direction == -1 || direction == +1);
     struct track *prev = NULL, *next = NULL;
     bool seen = track == NULL;
     for (int n = 0; n < mpctx->num_tracks; n++) {
         struct track *cur = mpctx->tracks[n];
-        // One track can be selected only one time - pretend already selected
-        // tracks don't exist.
-        for (int r = 0; r < NUM_PTRACKS; r++) {
-            if (r != order && mpctx->current_track[r][type] == cur)
-                cur = NULL;
-        }
-        if (!cur)
-            continue;
         if (cur->type == type) {
             if (cur == track) {
                 seen = true;
-            } else {
+            } else if (!cur->selected) {
                 if (seen && !next) {
                     next = cur;
                 }
@@ -1889,7 +1880,7 @@ static int property_switch_track(struct m_property *prop, int action, void *arg,
             return M_PROPERTY_ERROR;
         struct m_property_switch_arg *sarg = arg;
         mp_switch_track_n(mpctx, order, type,
-            track_next(mpctx, order, type, sarg->inc >= 0 ? +1 : -1, track),
+            track_next(mpctx, type, sarg->inc >= 0 ? +1 : -1, track),
             FLAG_MARK_SELECTION);
         print_track_list(mpctx, "Track switched:");
         return M_PROPERTY_OK;
@@ -2131,9 +2122,8 @@ static int mp_property_hwdec(void *ctx, struct m_property *prop,
         int current = -2;
         video_vd_control(vd, VDCTRL_GET_HWDEC, &current);
         if (current != opts->hwdec_api) {
+            video_vd_control(vd, VDCTRL_REINIT, NULL);
             double last_pts = mpctx->last_vo_pts;
-            uninit_video_chain(mpctx);
-            reinit_video_chain(mpctx);
             if (last_pts != MP_NOPTS_VALUE)
                 queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, true);
         }
@@ -2519,9 +2509,9 @@ static int mp_property_vd_imgparams(void *ctx, struct m_property *prop,
 {
     MPContext *mpctx = ctx;
     struct vo_chain *vo_c = mpctx->vo_chain;
-    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
-    if (!vo_c || !track)
+    if (!vo_c)
         return M_PROPERTY_UNAVAILABLE;
+    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
     struct mp_codec_params *c =
         track && track->stream ? track->stream->codec : NULL;
     if (vo_c->vf->input_params.imgfmt) {
@@ -2777,10 +2767,27 @@ static int mp_property_aspect(void *ctx, struct m_property *prop,
                               int action, void *arg)
 {
     MPContext *mpctx = ctx;
+
+    float aspect = mpctx->opts->movie_aspect;
+    if (mpctx->vo_chain && aspect <= 0) {
+        struct mp_image_params *params = &mpctx->vo_chain->vf->input_params;
+        if (params && params->p_w > 0 && params->p_h > 0) {
+            int d_w, d_h;
+            mp_image_params_get_dsize(params, &d_w, &d_h);
+            aspect = (float)d_w / d_h;
+        }
+    }
+    struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+    if (track && track->d_video && aspect <= 0) {
+        struct dec_video *d_video = track->d_video;
+        struct mp_codec_params *c = d_video->header->codec;
+        if (c->disp_w && c->disp_h)
+            aspect = (float)c->disp_w / c->disp_h;
+    }
+
     switch (action) {
     case M_PROPERTY_SET: {
         mpctx->opts->movie_aspect = *(float *)arg;
-        struct track *track = mpctx->current_track[0][STREAM_VIDEO];
         if (track && track->d_video) {
             video_reset_aspect(track->d_video);
             mp_force_video_refresh(mpctx);
@@ -2789,26 +2796,12 @@ static int mp_property_aspect(void *ctx, struct m_property *prop,
     }
     case M_PROPERTY_PRINT: {
         if (mpctx->opts->movie_aspect <= 0) {
-            *(char **)arg = talloc_strdup(NULL, "(original)");
+            *(char **)arg = talloc_asprintf(NULL, "%.3f (original)", aspect);
             return M_PROPERTY_OK;
         }
         break;
     }
     case M_PROPERTY_GET: {
-        float aspect = mpctx->opts->movie_aspect;
-        struct track *track = mpctx->current_track[0][STREAM_VIDEO];
-        if (track && track->d_video && mpctx->vo_chain && aspect <= 0) {
-            struct dec_video *d_video = track->d_video;
-            struct mp_codec_params *c = d_video->header->codec;
-            struct mp_image_params *params = &mpctx->vo_chain->vf->input_params;
-            if (params && params->p_w > 0 && params->p_h > 0) {
-                int d_w, d_h;
-                mp_image_params_get_dsize(params, &d_w, &d_h);
-                aspect = (float)d_w / d_h;
-            } else if (c->disp_w && c->disp_h) {
-                aspect = (float)c->disp_w / c->disp_h;
-            }
-        }
         *(float *)arg = aspect;
         return M_PROPERTY_OK;
     }
@@ -4595,7 +4588,7 @@ int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *re
                     // frame which actually shows the sub first (because video
                     // frame PTS and sub PTS rarely match exactly). Add some
                     // rounding for the mess of it.
-                    a[0] += 0.01 * (a[1] > 0 ? 1 : -1);
+                    a[0] += 0.01 * (a[1] >= 0 ? 1 : -1);
                     mark_seek(mpctx);
                     queue_seek(mpctx, MPSEEK_RELATIVE, a[0], MPSEEK_EXACT, false);
                     set_osd_function(mpctx, (a[0] > 0) ? OSD_FFW : OSD_REW);
@@ -5053,7 +5046,7 @@ int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *re
         const int x = cmd->args[0].v.i, y = cmd->args[1].v.i;
         int button = cmd->args[2].v.i;
         if (button == -1) {// no button
-            mp_input_set_mouse_pos(mpctx->input, x, y);
+            mp_input_set_mouse_pos_artificial(mpctx->input, x, y);
             break;
         }
         if (button < 0 || button >= 20) {// invalid button
@@ -5062,8 +5055,8 @@ int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *re
         }
         const bool dbc = cmd->args[3].v.i;
         button += dbc ? MP_MOUSE_BASE_DBL : MP_MOUSE_BASE;
-        mp_input_set_mouse_pos(mpctx->input, x, y);
-        mp_input_put_key(mpctx->input, button);
+        mp_input_set_mouse_pos_artificial(mpctx->input, x, y);
+        mp_input_put_key_artificial(mpctx->input, button);
         break;
     }
 
@@ -5078,21 +5071,21 @@ int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *re
         if (cmd->id == MP_CMD_KEYDOWN)
             code |= MP_KEY_STATE_DOWN;
 
-        mp_input_put_key(mpctx->input, code);
+        mp_input_put_key_artificial(mpctx->input, code);
         break;
     }
 
     case MP_CMD_KEYUP: {
         const char *key_name = cmd->args[0].v.s;
         if (key_name[0] == '\0') {
-            mp_input_put_key(mpctx->input, MP_INPUT_RELEASE_ALL);
+            mp_input_put_key_artificial(mpctx->input, MP_INPUT_RELEASE_ALL);
         } else {
             int code = mp_input_get_key_from_name(key_name);
             if (code < 0) {
                 MP_ERR(mpctx, "%s is not a valid input name.\n", key_name);
                 return -1;
             }
-            mp_input_put_key(mpctx->input, code | MP_KEY_STATE_UP);
+            mp_input_put_key_artificial(mpctx->input, code | MP_KEY_STATE_UP);
         }
         break;
     }
