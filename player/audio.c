@@ -147,8 +147,23 @@ int reinit_audio_filters(struct MPContext *mpctx)
     if (!ao_c)
         return 0;
 
+    double delay = 0;
+    if (ao_c->af->initialized > 0)
+        delay = af_calc_delay(ao_c->af);
+
     af_uninit(ao_c->af);
-    return recreate_audio_filters(mpctx) < 0 ? -1 : 1;
+    if (recreate_audio_filters(mpctx) < 0)
+        return -1;
+
+    // Only force refresh if the amount of dropped buffered data is going to
+    // cause "issues" for the A/V sync logic.
+    if (mpctx->audio_status == STATUS_PLAYING &&
+        mpctx->playback_pts != MP_NOPTS_VALUE && delay > 0.2)
+    {
+        queue_seek(mpctx, MPSEEK_ABSOLUTE, mpctx->playback_pts,
+                   MPSEEK_EXACT, true);
+    }
+    return 1;
 }
 
 // Call this if opts->playback_speed or mpctx->speed_factor_* change.
@@ -732,6 +747,10 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
         int r = decode_new_frame(mpctx->ao_chain);
         if (r == AD_WAIT)
             return; // continue later when new data is available
+        if (r == AD_EOF) {
+            mpctx->audio_status = STATUS_EOF;
+            return;
+        }
         reinit_audio_filters_and_output(mpctx);
         mpctx->sleeptime = 0;
         return; // try again next iteration

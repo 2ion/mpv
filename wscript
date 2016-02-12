@@ -702,7 +702,7 @@ video_output_features = [
         'name': '--vaapi',
         'desc': 'VAAPI acceleration',
         'deps': [ 'libdl' ],
-        'deps_any': [ 'x11', 'wayland' ],
+        'deps_any': [ 'x11', 'wayland', 'egl-drm' ],
         'func': check_pkg_config('libva', '>= 0.36.0'),
     }, {
         'name': '--vaapi-x11',
@@ -749,6 +749,10 @@ video_output_features = [
         'deps': [ 'win32' ],
         'func': check_cc(header_name='d3d9.h'),
     }, {
+        'name': '--android',
+        'desc': 'Android support',
+        'func': check_statement('android/api-level.h', '(void)__ANDROID__'),  # arbitrary android-specific header
+    }, {
         # We need MMAL/bcm_host/dispmanx APIs. Also, most RPI distros require
         # every project to hardcode the paths to the include directories. Also,
         # these headers are so broken that they spam tons of warnings by merely
@@ -770,10 +774,34 @@ video_output_features = [
             check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
             check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
         ),
+    }, {
+        'name': '--desktop-gl',
+        'desc': 'Desktop OpengGL support',
+        'func': compose_checks(
+            check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
+            check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
+        ),
+    } , {
+        'name': '--android-gl',
+        'desc': 'Android OpenGL ES support',
+        'deps': ['android'],
+        'func': check_statement('GLES3/gl3.h', '(void)GL_RGB32F'),  # arbitrary OpenGL ES 3.0 symbol
+    } , {
+        'name': '--any-gl',
+        'desc': 'Any OpenGL (ES) support',
+        'deps_any': ['desktop-gl', 'android-gl'],
+        'func': check_true
+    } , {
+        'name': '--plain-gl',
+        'desc': 'OpenGL without platform-specific code (e.g. for libmpv)',
+        'deps': ['any-gl'],
+        'deps_any': [ 'libmpv-shared', 'libmpv-static' ],
+        'func': check_true,
     } , {
         'name': '--gl',
         'desc': 'OpenGL video outputs',
-        'deps_any': [ 'gl-cocoa', 'gl-x11', 'egl-x11', 'egl-drm', 'gl-win32', 'gl-wayland', 'rpi' ],
+        'deps_any': [ 'gl-cocoa', 'gl-x11', 'egl-x11', 'egl-drm',
+                      'gl-win32', 'gl-wayland', 'rpi', 'plain-gl' ],
         'func': check_true
     }, {
         'name': 'egl-helpers',

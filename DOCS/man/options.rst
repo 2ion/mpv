@@ -3554,6 +3554,11 @@ Miscellaneous
     for scripts which want to set a title, without overriding the user's
     setting in ``--title``.
 
+``--external-file=<filename>``
+    Add all tracks from the given file. Unlike ``--sub-file`` and
+    ``--audio-file``, this includes all tracks, and does not cause default
+    stream selection over the "proper" file.
+
 ``--lavfi-complex=<string>``
     Set a "complex" libavfilter filter, which means a single filter graph can
     take input from multiple source audio and video tracks. The graph can result
@@ -3584,6 +3589,8 @@ Miscellaneous
         - ``--lavfi-complex='[aid1] asplit [ao] [t] ; [t] aphasemeter [vo]'``
           Play audio track 1, and visualize it as video using the ``aphasemeter``
           filter.
+        - ``--lavfi-complex='[aid1] [aid2] amix [ao]'``
+          Play audio track 1 and 2 at the same time.
         - ``--lavfi-complex='[vid1] [vid2] vstack [vo]'``
           Stack video track 1 and 2 and play them at the same time. Note that
           both tracks need to have the same width, or filter initialization

@@ -121,7 +121,8 @@ static void add_pad(struct lavfi *c, enum lavfi_direction dir, AVFilterInOut *it
     }
 
     if (!item->name) {
-        MP_FATAL(c, "what the shit\n");
+        MP_FATAL(c, "filter pad without name label\n");
+        c->failed = true;
         return;
     }
 
@@ -130,6 +131,7 @@ static void add_pad(struct lavfi *c, enum lavfi_direction dir, AVFilterInOut *it
         // Graph recreation case: reassociate an existing pad.
         if (p->dir != dir || p->type != type) {
             MP_FATAL(c, "pad '%s' changed type or direction\n", item->name);
+            c->failed = true;
             return;
         }
     } else {
@@ -508,8 +510,9 @@ static void feed_input_pads(struct lavfi *c)
             MP_FATAL(c, "could not pass frame to filter\n");
         av_frame_free(&frame);
 
-        pad->input_waiting = pad->input_again = false;
+        pad->input_again = false;
         pad->input_eof = eof;
+        pad->input_waiting = eof; // input _might_ come again in the future
     }
 }
 
@@ -533,7 +536,7 @@ static void read_output_pads(struct lavfi *c)
         assert(pad->buffer);
         assert(!pad->pending_v && !pad->pending_a);
 
-        int r = AVERROR(EAGAIN);
+        int r = AVERROR_EOF;
         if (!pad->buffer_is_eof)
             r = av_buffersink_get_frame(pad->buffer, pad->tmp_frame);
         if (r >= 0) {
@@ -690,7 +693,7 @@ void lavfi_send_status(struct lavfi_pad *pad, int status)
     assert(status != DATA_OK);
     assert(!pad->pending_v && !pad->pending_a);
 
-    pad->input_waiting = status == DATA_WAIT;
+    pad->input_waiting = status == DATA_WAIT || status == DATA_EOF;
     pad->input_again = status == DATA_AGAIN;
     pad->input_eof = status == DATA_EOF;
 }

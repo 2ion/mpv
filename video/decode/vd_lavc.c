@@ -457,11 +457,6 @@ static void init_avctx(struct dec_video *vd, const char *decoder,
 
 error:
     MP_ERR(vd, "Could not open codec.\n");
-    // Free it here to avoid attempting to flush+close.
-    if (ctx->avctx) {
-        av_freep(&ctx->avctx->extradata);
-        av_freep(&ctx->avctx);
-    }
     uninit_avctx(vd);
 }
 
@@ -469,7 +464,7 @@ static void reset_avctx(struct dec_video *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
-    if (ctx->avctx)
+    if (ctx->avctx && avcodec_is_open(ctx->avctx))
         avcodec_flush_buffers(ctx->avctx);
     ctx->flushing = false;
 }
@@ -495,14 +490,14 @@ static void uninit_avctx(struct dec_video *vd)
     if (ctx->avctx) {
         if (avcodec_close(ctx->avctx) < 0)
             MP_ERR(vd, "Could not close codec.\n");
-
         av_freep(&ctx->avctx->extradata);
-        av_freep(&ctx->avctx);
     }
 
     if (ctx->hwdec && ctx->hwdec->uninit)
         ctx->hwdec->uninit(ctx);
     ctx->hwdec = NULL;
+
+    av_freep(&ctx->avctx);
 
     ctx->hwdec_failed = false;
     ctx->hwdec_fail_count = 0;
@@ -780,17 +775,13 @@ static int control(struct dec_video *vd, int cmd, void *arg)
     case VDCTRL_RESET:
         flush_all(vd);
         return CONTROL_TRUE;
-    case VDCTRL_QUERY_UNSEEN_FRAMES: {
+    case VDCTRL_GET_BFRAMES: {
         AVCodecContext *avctx = ctx->avctx;
         if (!avctx)
             break;
         if (ctx->hwdec && ctx->hwdec->type == HWDEC_RPI)
             break; // MMAL has arbitrary buffering, thus unknown
-        int delay = avctx->has_b_frames;
-        assert(delay >= 0);
-        if (avctx->active_thread_type & FF_THREAD_FRAME)
-            delay += avctx->thread_count - 1;
-        *(int *)arg = delay;
+        *(int *)arg = avctx->has_b_frames;
         return CONTROL_TRUE;
     }
     case VDCTRL_GET_HWDEC: {
