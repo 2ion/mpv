@@ -758,11 +758,6 @@ int dvb_step_channel(stream_t *stream, int dir)
 
     MP_VERBOSE(stream, "DVB_STEP_CHANNEL dir %d\n", dir);
 
-    if (priv == NULL) {
-        MP_ERR(stream, "dvb_step_channel: NULL priv_ptr, quit\n");
-        return 0;
-    }
-
     list = state->list;
     if (list == NULL) {
         MP_ERR(stream, "dvb_step_channel: NULL list_ptr, quit\n");
@@ -1106,6 +1101,7 @@ dvb_state_t *dvb_get_state(stream_t *stream)
           if (tmp == NULL) {
             mp_err(log, "DVB_CONFIG, can't realloc %d bytes, skipping\n",
                    size);
+            free(list);
             continue;
           }
           cards = tmp;
@@ -1113,6 +1109,8 @@ dvb_state_t *dvb_get_state(stream_t *stream)
           name = malloc(20);
           if (name == NULL) {
             mp_err(log, "DVB_CONFIG, can't realloc 20 bytes, skipping\n");
+            free(list);
+            free(tmp);
             continue;
           }
 

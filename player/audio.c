@@ -389,6 +389,7 @@ int init_audio_decoder(struct MPContext *mpctx, struct track *track)
     d_audio->global = mpctx->global;
     d_audio->opts = mpctx->opts;
     d_audio->header = track->stream;
+    d_audio->codec = track->stream->codec;
 
     d_audio->try_spdif = true;
 
@@ -420,7 +421,7 @@ void reinit_audio_chain_src(struct MPContext *mpctx, struct lavfi_pad *src)
         track = mpctx->current_track[0][STREAM_AUDIO];
         if (!track)
             return;
-        sh = track ? track->stream : NULL;
+        sh = track->stream;
         if (!sh) {
             uninit_audio_out(mpctx);
             goto no_audio;
@@ -430,7 +431,7 @@ void reinit_audio_chain_src(struct MPContext *mpctx, struct lavfi_pad *src)
 
     mp_notify(mpctx, MPV_EVENT_AUDIO_RECONFIG, NULL);
 
-    struct ao_chain *ao_c = ao_c = talloc_zero(NULL, struct ao_chain);
+    struct ao_chain *ao_c = talloc_zero(NULL, struct ao_chain);
     mpctx->ao_chain = ao_c;
     ao_c->log = mpctx->log;
     ao_c->af = af_new(mpctx->global);

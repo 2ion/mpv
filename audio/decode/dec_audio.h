@@ -32,6 +32,7 @@ struct dec_audio {
     struct mpv_global *global;
     const struct ad_functions *ad_driver;
     struct sh_stream *header;
+    struct mp_codec_params *codec;
     char *decoder_desc;
 
     bool try_spdif;
@@ -42,7 +43,9 @@ struct dec_audio {
     // Strictly internal (dec_audio.c).
 
     double pts; // endpts of previous frame
+    double start, end;
     struct demux_packet *packet;
+    struct demux_packet *new_segment;
     struct mp_audio *current_frame;
     int current_state;
 };

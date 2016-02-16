@@ -68,6 +68,11 @@ void video_reset(struct dec_video *d_video)
     d_video->dropped_frames = 0;
     d_video->current_state = DATA_AGAIN;
     mp_image_unrefp(&d_video->current_mpi);
+    talloc_free(d_video->packet);
+    d_video->packet = NULL;
+    talloc_free(d_video->new_segment);
+    d_video->new_segment = NULL;
+    d_video->start = d_video->end = MP_NOPTS_VALUE;
 }
 
 int video_vd_control(struct dec_video *d_video, int cmd, void *arg)
@@ -88,6 +93,8 @@ void video_uninit(struct dec_video *d_video)
         MP_VERBOSE(d_video, "Uninit video.\n");
         d_video->vd_driver->uninit(d_video);
     }
+    talloc_free(d_video->packet);
+    talloc_free(d_video->new_segment);
     talloc_free(d_video);
 }
 
@@ -126,15 +133,17 @@ static const struct vd_functions *find_driver(const char *name)
     return NULL;
 }
 
-bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
+bool video_init_best_codec(struct dec_video *d_video)
 {
+    struct MPOpts *opts = d_video->opts;
+
     assert(!d_video->vd_driver);
     video_reset(d_video);
     d_video->has_broken_packet_pts = -10; // needs 10 packets to reach decision
 
     struct mp_decoder_entry *decoder = NULL;
     struct mp_decoder_list *list =
-        mp_select_video_decoders(d_video->header->codec->codec, video_decoders);
+        mp_select_video_decoders(d_video->codec->codec, opts->video_decoders);
 
     mp_print_decoders(d_video->log, MSGL_V, "Codec list:", list);
 
@@ -162,7 +171,7 @@ bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
         MP_VERBOSE(d_video, "Selected video codec: %s\n", d_video->decoder_desc);
     } else {
         MP_ERR(d_video, "Failed to initialize a video decoder for codec '%s'.\n",
-               d_video->header->codec->codec);
+               d_video->codec->codec);
     }
 
     if (d_video->header->missing_timestamps) {
@@ -180,7 +189,7 @@ static void fix_image_params(struct dec_video *d_video,
 {
     struct MPOpts *opts = d_video->opts;
     struct mp_image_params p = *params;
-    struct mp_codec_params *c = d_video->header->codec;
+    struct mp_codec_params *c = d_video->codec;
 
     MP_VERBOSE(d_video, "Decoder format: %s\n", mp_image_params_to_str(params));
 
@@ -239,7 +248,10 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
                                       int drop_frame)
 {
     struct MPOpts *opts = d_video->opts;
-    bool avi_pts = d_video->header->codec->avi_dts && opts->correct_pts;
+    bool avi_pts = d_video->codec->avi_dts && opts->correct_pts;
+
+    if (!d_video->vd_driver)
+        return NULL;
 
     struct demux_packet packet_copy;
     if (packet && packet->dts == MP_NOPTS_VALUE && !avi_pts) {
@@ -369,22 +381,37 @@ void video_work(struct dec_video *d_video)
         return;
     }
 
-    struct demux_packet *pkt;
-    if (demux_read_packet_async(d_video->header, &pkt) == 0) {
+    if (!d_video->packet && !d_video->new_segment &&
+        demux_read_packet_async(d_video->header, &d_video->packet) == 0)
+    {
         d_video->current_state = DATA_WAIT;
         return;
     }
 
+    if (d_video->packet && d_video->packet->new_segment) {
+        assert(!d_video->new_segment);
+        d_video->new_segment = d_video->packet;
+        d_video->packet = NULL;
+    }
+
+    bool had_input_packet = !!d_video->packet;
+    bool had_packet = had_input_packet || d_video->new_segment;
+
+    double start_pts = d_video->start_pts;
+    if (d_video->start != MP_NOPTS_VALUE && (start_pts == MP_NOPTS_VALUE ||
+                                             d_video->start > start_pts))
+        start_pts = d_video->start;
+
     int framedrop_type = d_video->framedrop_enabled ? 1 : 0;
-    if (d_video->start_pts != MP_NOPTS_VALUE && pkt &&
-        pkt->pts < d_video->start_pts - .005 &&
+    if (start_pts != MP_NOPTS_VALUE && d_video->packet &&
+        d_video->packet->pts < start_pts - .005 &&
         !d_video->has_broken_packet_pts)
     {
         framedrop_type = 2;
     }
-    d_video->current_mpi = decode_packet(d_video, pkt, framedrop_type);
-    bool had_packet = !!pkt;
-    talloc_free(pkt);
+    d_video->current_mpi = decode_packet(d_video, d_video->packet, framedrop_type);
+    talloc_free(d_video->packet); // always fully consumed
+    d_video->packet = NULL;
 
     d_video->current_state = DATA_OK;
     if (!d_video->current_mpi) {
@@ -394,6 +421,38 @@ void video_work(struct dec_video *d_video)
                 d_video->dropped_frames += 1;
             d_video->current_state = DATA_AGAIN;
         }
+    }
+
+    bool segment_ended = !d_video->current_mpi && !had_input_packet;
+
+    if (d_video->current_mpi && d_video->current_mpi->pts != MP_NOPTS_VALUE) {
+        double vpts = d_video->current_mpi->pts;
+        segment_ended = d_video->end != MP_NOPTS_VALUE && vpts >= d_video->end;
+        if ((start_pts != MP_NOPTS_VALUE && vpts < start_pts) || segment_ended) {
+            talloc_free(d_video->current_mpi);
+            d_video->current_mpi = NULL;
+        }
+    }
+
+    // If there's a new segment, start it as soon as we're drained/finished.
+    if (segment_ended && d_video->new_segment) {
+        struct demux_packet *new_segment = d_video->new_segment;
+        d_video->new_segment = NULL;
+
+        // Could avoid decoder reinit; would still need flush.
+        d_video->codec = new_segment->codec;
+        if (d_video->vd_driver)
+            d_video->vd_driver->uninit(d_video);
+        d_video->vd_driver = NULL;
+        video_init_best_codec(d_video);
+
+        d_video->start = new_segment->start;
+        d_video->end = new_segment->end;
+
+        new_segment->new_segment = false;
+
+        d_video->packet = new_segment;
+        d_video->current_state = DATA_AGAIN;
     }
 }
 
