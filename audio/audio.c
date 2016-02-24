@@ -259,7 +259,42 @@ void mp_audio_skip_samples(struct mp_audio *data, int samples)
         data->planes[n] = (uint8_t *)data->planes[n] + samples * data->sstride;
 
     data->samples -= samples;
+
+    if (data->pts != MP_NOPTS_VALUE)
+        data->pts += samples / (double)data->rate;
 }
+
+// Clip the given frame to the given timestamp range. Adjusts the frame size
+// and timestamp.
+void mp_audio_clip_timestamps(struct mp_audio *f, double start, double end)
+{
+    if (f->pts == MP_NOPTS_VALUE || f->rate < 1)
+        return;
+    double f_end = f->pts + f->samples / (double)f->rate;
+    if (end != MP_NOPTS_VALUE) {
+        if (f_end >= end) {
+            if (f->pts >= end) {
+                f->samples = 0;
+            } else {
+                int new = (end - f->pts) * f->rate;
+                f->samples = MPCLAMP(new, 0, f->samples);
+            }
+        }
+    }
+    if (start != MP_NOPTS_VALUE) {
+        if (f->pts < start) {
+            if (f_end <= start) {
+                f->samples = 0;
+                f->pts = f_end;
+            } else {
+                int skip = (start - f->pts) * f->rate;
+                skip = MPCLAMP(skip, 0, f->samples);
+                mp_audio_skip_samples(f, skip);
+            }
+        }
+    }
+}
+
 
 // Return false if the frame data is shared, true otherwise.
 // Will return true for non-refcounted frames.

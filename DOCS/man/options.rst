@@ -394,8 +394,7 @@ Program Behavior
 
 ``--merge-files``
     Pretend that all files passed to mpv are concatenated into a single, big
-    file. This uses timeline/EDL support internally. Note that this won't work
-    for ordered chapter files.
+    file. This uses timeline/EDL support internally.
 
 ``--no-resume-playback``
     Do not restore playback position from the ``watch_later`` configuration
@@ -3602,6 +3601,6 @@ Miscellaneous
         - ``--lavfi-complex='[aid1] asplit [ao] [t] ; [t] aphasemeter [t2] ; [vid1] [t2] overlay [vo]'``
           Play audio track 1, and overlay its visualization over video track 1.
 
-    See the Ffmpeg libavfilter documentation for details on the filter.
+    See the FFmpeg libavfilter documentation for details on the filter.
 
 

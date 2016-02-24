@@ -81,16 +81,6 @@ static void uninit_demuxer(struct MPContext *mpctx)
 
     free_demuxer_and_stream(mpctx->demuxer);
     mpctx->demuxer = NULL;
-
-    talloc_free(mpctx->sources);
-    mpctx->sources = NULL;
-    mpctx->num_sources = 0;
-}
-
-static void uninit_stream(struct MPContext *mpctx)
-{
-    free_stream(mpctx->stream);
-    mpctx->stream = NULL;
 }
 
 #define APPEND(s, ...) mp_snprintf_cat(s, sizeof(s), __VA_ARGS__)
@@ -242,20 +232,11 @@ static void wakeup_demux(void *pctx)
     mp_input_wakeup(mpctx->input);
 }
 
-static void enable_demux_thread(struct MPContext *mpctx)
+static void enable_demux_thread(struct MPContext *mpctx, struct demuxer *demux)
 {
-    if (mpctx->demuxer && mpctx->opts->demuxer_thread) {
-        demux_set_wakeup_cb(mpctx->demuxer, wakeup_demux, mpctx);
-        demux_start_thread(mpctx->demuxer);
-        for (int n = 0; n < mpctx->num_tracks; n++) {
-            struct track *track = mpctx->tracks[n];
-            if (track->is_external && track->stream && !track->preloaded &&
-                !track->demuxer->fully_read)
-            {
-                demux_set_wakeup_cb(track->demuxer, wakeup_demux, mpctx);
-                demux_start_thread(track->demuxer);
-            }
-        }
+    if (mpctx->opts->demuxer_thread && !demux->fully_read) {
+        demux_set_wakeup_cb(demux, wakeup_demux, mpctx);
+        demux_start_thread(demux);
     }
 }
 
@@ -576,15 +557,8 @@ bool mp_remove_track(struct MPContext *mpctx, struct track *track)
     for (int n = mpctx->num_tracks - 1; n >= 0 && !in_use; n--)
         in_use |= mpctx->tracks[n]->demuxer == d;
 
-    if (!in_use) {
-        for (int n = 0; n < mpctx->num_sources; n++) {
-            if (mpctx->sources[n] == d) {
-                MP_TARRAY_REMOVE_AT(mpctx->sources, mpctx->num_sources, n);
-                break;
-            }
-        }
+    if (!in_use)
         free_demuxer_and_stream(d);
-    }
 
     mp_notify(mpctx, MPV_EVENT_TRACKS_CHANGED, NULL);
 
@@ -619,6 +593,7 @@ struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
         demux_open_url(filename, &params, mpctx->playback_abort, mpctx->global);
     if (!demuxer)
         goto err_out;
+    enable_demux_thread(mpctx, demuxer);
 
     if (filter != STREAM_SUB && opts->rebase_start_time)
         demux_set_ts_offset(demuxer, -demuxer->start_time);
@@ -642,9 +617,6 @@ struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
         goto err_out;
     }
 
-    MP_TARRAY_APPEND(NULL, mpctx->sources, mpctx->num_sources, demuxer);
-    if (mpctx->playback_initialized)
-        enable_demux_thread(mpctx);
     return first;
 
 err_out:
@@ -684,8 +656,9 @@ void autoload_external_files(struct MPContext *mpctx)
     for (int i = 0; list && list[i].fname; i++) {
         char *filename = list[i].fname;
         char *lang = list[i].lang;
-        for (int n = 0; n < mpctx->num_sources; n++) {
-            if (strcmp(mpctx->sources[n]->stream->url, filename) == 0)
+        for (int n = 0; n < mpctx->num_tracks; n++) {
+            struct track *t = mpctx->tracks[n];
+            if (t->demuxer && strcmp(t->demuxer->stream->url, filename) == 0)
                 goto skip;
         }
         if (list[i].type == STREAM_SUB && !sc[STREAM_VIDEO] && !sc[STREAM_AUDIO])
@@ -872,6 +845,7 @@ static void open_demux_reentrant(struct MPContext *mpctx)
     if (args.demux) {
         talloc_steal(args.demux, args.global);
         mpctx->demuxer = args.demux;
+        enable_demux_thread(mpctx, mpctx->demuxer);
     } else {
         mpctx->error_playing = args.err;
         talloc_free(args.global);
@@ -1058,7 +1032,6 @@ static void play_current_file(struct MPContext *mpctx)
 
 reopen_file:
 
-    assert(mpctx->stream == NULL);
     assert(mpctx->demuxer == NULL);
 
     if (process_open_hooks(mpctx) < 0)
@@ -1135,8 +1108,6 @@ reopen_file:
 
     update_demuxer_properties(mpctx);
 
-    enable_demux_thread(mpctx);
-
 #if HAVE_ENCODING
     if (mpctx->encode_lavc_ctx && mpctx->current_track[0][STREAM_VIDEO])
         encode_lavc_expect_stream(mpctx->encode_lavc_ctx, AVMEDIA_TYPE_VIDEO);
@@ -1189,13 +1160,10 @@ reopen_file:
         if (start != MP_NOPTS_VALUE)
             startpos = start;
     }
-    if (startpos == MP_NOPTS_VALUE)
-        startpos = 0;
     if (startpos != MP_NOPTS_VALUE) {
         queue_seek(mpctx, MPSEEK_ABSOLUTE, startpos, 0, true);
         execute_queued_seek(mpctx);
     }
-    get_relative_time(mpctx); // reset current delta
 
     if (mpctx->opts->pause)
         pause_player(mpctx);
@@ -1228,7 +1196,6 @@ terminate_playback:
     uninit_video_chain(mpctx);
     uninit_sub_all(mpctx);
     uninit_demuxer(mpctx);
-    uninit_stream(mpctx);
     if (!opts->gapless_audio && !mpctx->encode_lavc_ctx)
         uninit_audio_out(mpctx);
 

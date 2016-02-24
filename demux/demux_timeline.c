@@ -67,6 +67,30 @@ struct priv {
     double seek_pts;
 };
 
+static void reselect_streams(struct demuxer *demuxer)
+{
+    struct priv *p = demuxer->priv;
+
+    for (int n = 0; n < p->num_streams; n++) {
+        struct virtual_stream *vs = &p->streams[n];
+        vs->selected = demux_stream_is_selected(vs->sh);
+    }
+
+    for (int n = 0; n < p->num_segments; n++) {
+        struct segment *seg = p->segments[n];
+        for (int i = 0; i < seg->num_stream_map; i++) {
+            struct sh_stream *sh = demux_get_stream(seg->d, i);
+            bool selected = false;
+            if (seg->stream_map[i] >= 0)
+                selected = p->streams[seg->stream_map[i]].selected;
+            // This stops demuxer readahead for inactive segments.
+            if (!p->current || seg->d != p->current->d)
+                selected = false;
+            demuxer_select_track(seg->d, sh, selected);
+        }
+    }
+}
+
 static void switch_segment(struct demuxer *demuxer, struct segment *new,
                            double start_pts, int flags)
 {
@@ -81,6 +105,7 @@ static void switch_segment(struct demuxer *demuxer, struct segment *new,
     MP_VERBOSE(demuxer, "switch to segment %d\n", new->index);
 
     p->current = new;
+    reselect_streams(demuxer);
     demux_set_ts_offset(new->d, new->start - new->d_start);
     demux_seek(new->d, start_pts, flags | SEEK_ABSOLUTE);
 
@@ -200,7 +225,7 @@ static int d_fill_buffer(struct demuxer *demuxer)
         }
     }
 
-    pkt->new_segment = vs->new_segment;
+    pkt->new_segment |= vs->new_segment;
     vs->new_segment = false;
 
     demux_add_packet(vs->sh, pkt);
@@ -333,6 +358,8 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
     demuxer->seekable = true;
     demuxer->partially_seekable = true;
 
+    reselect_streams(demuxer);
+
     return 0;
 }
 
@@ -342,27 +369,6 @@ static void d_close(struct demuxer *demuxer)
     struct demuxer *master = p->tl->demuxer;
     timeline_destroy(p->tl);
     free_demuxer(master);
-}
-
-static void reselect_streams(struct demuxer *demuxer)
-{
-    struct priv *p = demuxer->priv;
-
-    for (int n = 0; n < p->num_streams; n++) {
-        struct virtual_stream *vs = &p->streams[n];
-        vs->selected = demux_stream_is_selected(vs->sh);
-    }
-
-    for (int n = 0; n < p->num_segments; n++) {
-        struct segment *seg = p->segments[n];
-        for (int i = 0; i < seg->num_stream_map; i++) {
-            struct sh_stream *sh = demux_get_stream(seg->d, i);
-            bool selected = false;
-            if (seg->stream_map[i] >= 0)
-                selected = p->streams[seg->stream_map[i]].selected;
-            demuxer_select_track(seg->d, sh, selected);
-        }
-    }
 }
 
 static int d_control(struct demuxer *demuxer, int cmd, void *arg)

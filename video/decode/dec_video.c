@@ -248,20 +248,15 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
                                       int drop_frame)
 {
     struct MPOpts *opts = d_video->opts;
-    bool avi_pts = d_video->codec->avi_dts && opts->correct_pts;
 
     if (!d_video->vd_driver)
         return NULL;
 
-    struct demux_packet packet_copy;
-    if (packet && packet->dts == MP_NOPTS_VALUE && !avi_pts) {
-        packet_copy = *packet;
-        packet = &packet_copy;
-        packet->dts = packet->pts;
-    }
-
     double pkt_pts = packet ? packet->pts : MP_NOPTS_VALUE;
     double pkt_dts = packet ? packet->dts : MP_NOPTS_VALUE;
+
+    if (pkt_pts == MP_NOPTS_VALUE)
+        d_video->has_broken_packet_pts = 1;
 
     double pkt_pdts = pkt_pts == MP_NOPTS_VALUE ? pkt_dts : pkt_pts;
     if (pkt_pdts != MP_NOPTS_VALUE && d_video->first_packet_pdts == MP_NOPTS_VALUE)
@@ -302,6 +297,11 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
         d_video->codec_dts = mpi->dts;
     }
 
+    if (d_video->has_broken_packet_pts < 0)
+        d_video->has_broken_packet_pts++;
+    if (d_video->num_codec_pts_problems)
+        d_video->has_broken_packet_pts = 1;
+
     // If PTS is unset, or non-monotonic, fall back to DTS.
     if ((d_video->num_codec_pts_problems > d_video->num_codec_dts_problems ||
          pts == MP_NOPTS_VALUE) && dts != MP_NOPTS_VALUE)
@@ -321,11 +321,6 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
         }
     }
 
-    if (d_video->has_broken_packet_pts < 0)
-        d_video->has_broken_packet_pts++;
-    if (d_video->num_codec_pts_problems || pkt_pts == MP_NOPTS_VALUE)
-        d_video->has_broken_packet_pts = 1;
-
     if (!mp_image_params_equal(&d_video->last_format, &mpi->params))
         fix_image_params(d_video, &mpi->params);
 
@@ -335,7 +330,9 @@ static struct mp_image *decode_packet(struct dec_video *d_video,
     d_video->decoded_pts = pts;
 
     // Compensate for incorrectly using mpeg-style DTS for avi timestamps.
-    if (avi_pts && mpi->pts != MP_NOPTS_VALUE && d_video->fps > 0) {
+    if (d_video->codec->avi_dts && opts->correct_pts &&
+        mpi->pts != MP_NOPTS_VALUE && d_video->fps > 0)
+    {
         int delay = -1;
         video_vd_control(d_video, VDCTRL_GET_BFRAMES, &delay);
         mpi->pts -= MPMAX(delay, 0) / d_video->fps;
@@ -388,6 +385,11 @@ void video_work(struct dec_video *d_video)
         return;
     }
 
+    if (d_video->packet) {
+        if (d_video->packet->dts == MP_NOPTS_VALUE && !d_video->codec->avi_dts)
+            d_video->packet->dts = d_video->packet->pts;
+    }
+
     if (d_video->packet && d_video->packet->new_segment) {
         assert(!d_video->new_segment);
         d_video->new_segment = d_video->packet;
@@ -410,8 +412,10 @@ void video_work(struct dec_video *d_video)
         framedrop_type = 2;
     }
     d_video->current_mpi = decode_packet(d_video, d_video->packet, framedrop_type);
-    talloc_free(d_video->packet); // always fully consumed
-    d_video->packet = NULL;
+    if (d_video->packet && d_video->packet->len == 0) {
+        talloc_free(d_video->packet);
+        d_video->packet = NULL;
+    }
 
     d_video->current_state = DATA_OK;
     if (!d_video->current_mpi) {
