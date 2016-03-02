@@ -73,7 +73,6 @@ void uninit_sub(struct MPContext *mpctx, struct track *track)
         int order = get_order(mpctx, track);
         if (order >= 0 && order <= 1)
             osd_set_sub(mpctx->osd, OSDTYPE_SUB + order, NULL);
-        reselect_demux_streams(mpctx);
     }
 }
 
@@ -104,7 +103,7 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
     {
         // Assume fully_read implies no interleaved audio/video streams.
         // (Reading packets will change the demuxer position.)
-        demux_seek(track->demuxer, 0, SEEK_ABSOLUTE);
+        demux_seek(track->demuxer, 0, 0);
         track->preloaded = sub_read_all_packets(track->d_sub);
     }
 

@@ -32,6 +32,8 @@
 #include "config.h"
 #include "mpv_talloc.h"
 #include "client.h"
+#include "common/av_common.h"
+#include "common/codecs.h"
 #include "common/msg.h"
 #include "common/msg_control.h"
 #include "command.h"
@@ -1944,7 +1946,14 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
     struct MPContext *mpctx = ctx;
     struct track *track = mpctx->tracks[item];
 
-    const char *codec = track->stream ? track->stream->codec->codec : NULL;
+    struct mp_codec_params p =
+        track->stream ? *track->stream->codec : (struct mp_codec_params){0};
+
+    const char *decoder_desc = NULL;
+    if (track->d_video)
+        decoder_desc = track->d_video->decoder_desc;
+    if (track->d_audio)
+        decoder_desc = track->d_audio->decoder_desc;
 
     struct m_sub_property props[] = {
         {"id",          SUB_PROP_INT(track->user_tid)},
@@ -1965,9 +1974,20 @@ static int get_track_entry(int item, int action, void *arg, void *ctx)
         {"selected",    SUB_PROP_FLAG(track->selected)},
         {"external-filename", SUB_PROP_STR(track->external_filename),
                         .unavailable = !track->external_filename},
-        {"codec",       SUB_PROP_STR(codec),
-                        .unavailable = !codec},
         {"ff-index",    SUB_PROP_INT(track->ff_index)},
+        {"decoder-desc", SUB_PROP_STR(decoder_desc),
+                        .unavailable = !decoder_desc},
+        {"codec",       SUB_PROP_STR(p.codec),
+                        .unavailable = !p.codec},
+        {"demux-w",     SUB_PROP_INT(p.disp_w), .unavailable = !p.disp_w},
+        {"demux-h",     SUB_PROP_INT(p.disp_h), .unavailable = !p.disp_h},
+        {"demux-channel-count", SUB_PROP_INT(p.channels.num),
+                        .unavailable = !p.channels.num},
+        {"demux-channels", SUB_PROP_STR(mp_chmap_to_str(&p.channels)),
+                        .unavailable = !p.channels.num},
+        {"demux-samplerate", SUB_PROP_INT(p.samplerate),
+                        .unavailable = !p.samplerate},
+        {"demux-fps",   SUB_PROP_DOUBLE(p.fps), .unavailable = p.fps <= 0},
         {0}
     };
 
@@ -3272,6 +3292,47 @@ static int mp_property_protocols(void *ctx, struct m_property *prop,
     return M_PROPERTY_NOT_IMPLEMENTED;
 }
 
+static int get_decoder_entry(int item, int action, void *arg, void *ctx)
+{
+    struct mp_decoder_list *codecs = ctx;
+    struct mp_decoder_entry *c = &codecs->entries[item];
+
+    struct m_sub_property props[] = {
+        {"family",      SUB_PROP_STR(c->family)},
+        {"codec",       SUB_PROP_STR(c->codec)},
+        {"driver" ,     SUB_PROP_STR(c->decoder)},
+        {"description", SUB_PROP_STR(c->desc)},
+        {0}
+    };
+
+    return m_property_read_sub(props, action, arg);
+}
+
+static int mp_property_decoders(void *ctx, struct m_property *prop,
+                                int action, void *arg)
+{
+    struct mp_decoder_list *codecs = talloc_zero(NULL, struct mp_decoder_list);
+    struct mp_decoder_list *v = talloc_steal(codecs, video_decoder_list());
+    struct mp_decoder_list *a = talloc_steal(codecs, audio_decoder_list());
+    mp_append_decoders(codecs, v);
+    mp_append_decoders(codecs, a);
+    int r = m_property_read_list(action, arg, codecs->num_entries,
+                                 get_decoder_entry, codecs);
+    talloc_free(codecs);
+    return r;
+}
+
+static int mp_property_encoders(void *ctx, struct m_property *prop,
+                                int action, void *arg)
+{
+    struct mp_decoder_list *codecs = talloc_zero(NULL, struct mp_decoder_list);
+    mp_add_lavc_encoders(codecs);
+    int r = m_property_read_list(action, arg, codecs->num_entries,
+                                 get_decoder_entry, codecs);
+    talloc_free(codecs);
+    return r;
+}
+
 static int mp_property_version(void *ctx, struct m_property *prop,
                                int action, void *arg)
 {
@@ -3282,6 +3343,16 @@ static int mp_property_configuration(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
     return m_property_strdup_ro(action, arg, CONFIGURATION);
+}
+
+static int mp_property_ffmpeg(void *ctx, struct m_property *prop,
+                               int action, void *arg)
+{
+#if HAVE_AV_VERSION_INFO
+    return m_property_strdup_ro(action, arg, av_version_info());
+#else
+    return M_PROPERTY_UNAVAILABLE;
+#endif
 }
 
 static int mp_property_alias(void *ctx, struct m_property *prop,
@@ -3689,9 +3760,12 @@ static const struct m_property mp_properties[] = {
     {"working-directory", mp_property_cwd},
 
     {"protocol-list", mp_property_protocols},
+    {"decoder-list", mp_property_decoders},
+    {"encoder-list", mp_property_encoders},
 
     {"mpv-version", mp_property_version},
     {"mpv-configuration", mp_property_configuration},
+    {"ffmpeg-version", mp_property_ffmpeg},
 
     {"options", mp_property_options},
     {"file-local-options", mp_property_local_options},
@@ -3746,7 +3820,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MPV_EVENT_CHAPTER_CHANGE, "chapter", "chapter-metadata"),
     E(MP_EVENT_CACHE_UPDATE, "cache", "cache-free", "cache-used", "cache-idle",
       "demuxer-cache-duration", "demuxer-cache-idle", "paused-for-cache",
-      "demuxer-cache-time"),
+      "demuxer-cache-time", "cache-buffering-state"),
     E(MP_EVENT_WIN_RESIZE, "window-scale", "osd-width", "osd-height", "osd-par"),
     E(MP_EVENT_WIN_STATE, "window-minimized", "display-names", "display-fps", "fullscreen"),
 };

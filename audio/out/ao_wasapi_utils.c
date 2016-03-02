@@ -298,7 +298,7 @@ static bool try_format_exclusive(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
     if (hr != AUDCLNT_E_UNSUPPORTED_FORMAT)
         EXIT_ON_ERROR(hr);
 
-    return hr == S_OK;
+    return SUCCEEDED(hr);
 exit_label:
     MP_ERR(state, "Error testing exclusive format: %s\n", mp_HRESULT_to_str(hr));
     return false;
@@ -607,18 +607,20 @@ static HRESULT fix_format(struct ao *ao)
     MP_VERBOSE(state, "Device period: %.2g ms\n",
                (double) devicePeriod / 10000.0 );
 
-    // integer multiple of device period close to 50ms
-    bufferPeriod = bufferDuration =
-                   ceil(50.0 * 10000.0 / devicePeriod) * devicePeriod;
+    if (state->share_mode == AUDCLNT_SHAREMODE_SHARED) {
+        // for shared mode, use integer multiple of device period close to 50ms
+        bufferDuration = devicePeriod * ceil(50.0 * 10000.0 / devicePeriod);
+        bufferPeriod   = 0;
+    } else {
+        // in exclusive mode, these should all be the same
+        bufferPeriod = bufferDuration = devicePeriod;
+    }
 
     // handle unsupported buffer size hopefully this shouldn't happen because of
     // the above integer device period
     // http://msdn.microsoft.com/en-us/library/windows/desktop/dd370875%28v=vs.85%29.aspx
     int retries=0;
 reinit:
-    if (state->share_mode == AUDCLNT_SHAREMODE_SHARED)
-        bufferPeriod = 0;
-
     MP_DBG(state, "IAudioClient::Initialize\n");
     hr = IAudioClient_Initialize(state->pAudioClient,
                                  state->share_mode,
@@ -640,9 +642,12 @@ reinit:
 
         IAudioClient_GetBufferSize(state->pAudioClient,
                                    &state->bufferFrameCount);
-        bufferPeriod = bufferDuration = (REFERENCE_TIME) (0.5 +
+        bufferDuration = (REFERENCE_TIME) (0.5 +
             (10000.0 * 1000 / state->format.Format.nSamplesPerSec
              * state->bufferFrameCount));
+        if (state->share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE)
+            bufferPeriod = bufferDuration;
+
 
         IAudioClient_Release(state->pAudioClient);
         state->pAudioClient = NULL;
@@ -936,93 +941,6 @@ exit_label:
     return deviceID;
 }
 
-static void *unmarshal(struct wasapi_state *state, REFIID type, IStream **from)
-{
-    if (!*from)
-        return NULL;
-    void *to_proxy = NULL;
-    HRESULT hr = CoGetInterfaceAndReleaseStream(*from, type, &to_proxy);
-    *from = NULL; // the stream is released even on failure
-    EXIT_ON_ERROR(hr);
-    return to_proxy;
-exit_label:
-    MP_WARN(state, "Error reading COM proxy: %s\n", mp_HRESULT_to_str(hr));
-    return to_proxy;
-}
-
-void wasapi_receive_proxies(struct wasapi_state *state) {
-    state->pAudioVolumeProxy    = unmarshal(state, &IID_ISimpleAudioVolume,
-                                            &state->sAudioVolume);
-    state->pEndpointVolumeProxy = unmarshal(state, &IID_IAudioEndpointVolume,
-                                            &state->sEndpointVolume);
-    state->pSessionControlProxy = unmarshal(state, &IID_IAudioSessionControl,
-                                            &state->sSessionControl);
-}
-
-void wasapi_release_proxies(wasapi_state *state) {
-    SAFE_RELEASE(state->pAudioVolumeProxy,
-                 ISimpleAudioVolume_Release(state->pAudioVolumeProxy));
-    SAFE_RELEASE(state->pEndpointVolumeProxy,
-                 IAudioEndpointVolume_Release(state->pEndpointVolumeProxy));
-    SAFE_RELEASE(state->pSessionControlProxy,
-                 IAudioSessionControl_Release(state->pSessionControlProxy));
-}
-
-// Must call CoReleaseMarshalData to decrement marshalled object's reference
-// count.
-#define SAFE_RELEASE_INTERFACE_STREAM(stream) do { \
-        if ((stream) != NULL) {                    \
-            CoReleaseMarshalData((stream));        \
-            IStream_Release((stream));             \
-            (stream) = NULL;                       \
-        }                                          \
-    } while(0)
-
-static IStream *marshal(struct wasapi_state *state,
-                         REFIID type, void *from_obj)
-{
-    if (!from_obj)
-        return NULL;
-    IStream *to;
-    HRESULT hr = CreateStreamOnHGlobal(NULL, TRUE, &to);
-    EXIT_ON_ERROR(hr);
-    hr = CoMarshalInterThreadInterfaceInStream(type, (IUnknown *)from_obj, &to);
-    EXIT_ON_ERROR(hr);
-    return to;
-exit_label:
-    SAFE_RELEASE_INTERFACE_STREAM(to);
-    MP_WARN(state, "Error creating COM proxy stream: %s\n",
-            mp_HRESULT_to_str(hr));
-    return to;
-}
-
-static void create_proxy_streams(struct wasapi_state *state) {
-    state->sAudioVolume    = marshal(state, &IID_ISimpleAudioVolume,
-                                     state->pAudioVolume);
-    state->sEndpointVolume = marshal(state, &IID_IAudioEndpointVolume,
-                                     state->pEndpointVolume);
-    state->sSessionControl = marshal(state, &IID_IAudioSessionControl,
-                                     state->pSessionControl);
-}
-
-static void destroy_proxy_streams(struct wasapi_state *state) {
-    // This is only to handle error conditions.
-    // During normal operation, these will already have been released by
-    // unmarshaling.
-    SAFE_RELEASE_INTERFACE_STREAM(state->sAudioVolume);
-    SAFE_RELEASE_INTERFACE_STREAM(state->sEndpointVolume);
-    SAFE_RELEASE_INTERFACE_STREAM(state->sSessionControl);
-}
-
-void wasapi_dispatch(struct ao *ao)
-{
-    MP_DBG(ao, "Dispatch\n");
-    // dispatch any possible pending messages
-    MSG msg;
-    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
-        DispatchMessage(&msg);
-}
-
 HRESULT wasapi_thread_init(struct ao *ao)
 {
     struct wasapi_state *state = ao->priv;
@@ -1057,13 +975,10 @@ retry: ;
     }
     EXIT_ON_ERROR(hr);
 
-    MP_DBG(ao, "Creating proxies\n");
-    create_proxy_streams(state);
-
     MP_DBG(ao, "Init wasapi thread done\n");
     return S_OK;
 exit_label:
-    MP_ERR(state, "Error setting up audio thread: %s\n", mp_HRESULT_to_str(hr));
+    MP_FATAL(state, "Error setting up audio thread: %s\n", mp_HRESULT_to_str(hr));
     return hr;
 }
 
@@ -1071,12 +986,9 @@ void wasapi_thread_uninit(struct ao *ao)
 {
     struct wasapi_state *state = ao->priv;
     MP_DBG(ao, "Thread shutdown\n");
-    wasapi_dispatch(ao);
 
     if (state->pAudioClient)
         IAudioClient_Stop(state->pAudioClient);
-
-    destroy_proxy_streams(state);
 
     SAFE_RELEASE(state->pRenderClient,   IAudioRenderClient_Release(state->pRenderClient));
     SAFE_RELEASE(state->pAudioClock,     IAudioClock_Release(state->pAudioClock));
