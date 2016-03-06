@@ -53,6 +53,7 @@ extern const demuxer_desc_t demuxer_desc_playlist;
 extern const demuxer_desc_t demuxer_desc_disc;
 extern const demuxer_desc_t demuxer_desc_rar;
 extern const demuxer_desc_t demuxer_desc_libarchive;
+extern const demuxer_desc_t demuxer_desc_null;
 extern const demuxer_desc_t demuxer_desc_timeline;
 
 /* Please do not add any new demuxers here. If you want to implement a new
@@ -76,6 +77,7 @@ const demuxer_desc_t *const demuxer_list[] = {
     &demuxer_desc_lavf,
     &demuxer_desc_mf,
     &demuxer_desc_playlist,
+    &demuxer_desc_null,
     NULL
 };
 
@@ -679,11 +681,11 @@ static struct demux_packet *dequeue_packet(struct demux_stream *ds)
     if (ts != MP_NOPTS_VALUE)
         ds->base_ts = ts;
 
-    if (pkt->keyframe) {
+    if (pkt->keyframe && ts != MP_NOPTS_VALUE) {
         // Update bitrate - only at keyframe points, because we use the
         // (possibly) reordered packet timestamps instead of realtime.
         double d = ts - ds->last_br_ts;
-        if (ts == MP_NOPTS_VALUE || ds->last_br_ts == MP_NOPTS_VALUE || d < 0) {
+        if (ds->last_br_ts == MP_NOPTS_VALUE || d < 0) {
             ds->bitrate = -1;
             ds->last_br_ts = ts;
             ds->last_br_bytes = 0;
