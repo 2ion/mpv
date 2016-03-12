@@ -419,6 +419,17 @@ static int mp_property_stream_path(void *ctx, struct m_property *prop,
     return m_property_strdup_ro(action, arg, stream->url);
 }
 
+struct change_stream_capture_args {
+    char *filename;
+    struct demuxer *demux;
+};
+
+static void do_change_stream_capture(void *p)
+{
+    struct change_stream_capture_args *args = p;
+    stream_set_capture_file(args->demux->stream, args->filename);
+}
+
 static int mp_property_stream_capture(void *ctx, struct m_property *prop,
                                       int action, void *arg)
 {
@@ -427,10 +438,8 @@ static int mp_property_stream_capture(void *ctx, struct m_property *prop,
         return M_PROPERTY_UNAVAILABLE;
 
     if (action == M_PROPERTY_SET) {
-        char *filename = *(char **)arg;
-        demux_pause(mpctx->demuxer);
-        stream_set_capture_file(mpctx->demuxer->stream, filename);
-        demux_unpause(mpctx->demuxer);
+        struct change_stream_capture_args args = {*(char **)arg, mpctx->demuxer};
+        demux_run_on_thread(mpctx->demuxer, do_change_stream_capture, &args);
         // fall through to mp_property_generic_option
     }
     return mp_property_generic_option(mpctx, prop, action, arg);
@@ -458,24 +467,14 @@ static int mp_property_file_format(void *ctx, struct m_property *prop,
     return m_property_strdup_ro(action, arg, name);
 }
 
-/// Position in the stream (RW)
 static int mp_property_stream_pos(void *ctx, struct m_property *prop,
                                   int action, void *arg)
 {
     MPContext *mpctx = ctx;
     struct demuxer *demuxer = mpctx->demuxer;
-    if (!demuxer)
+    if (!demuxer || demuxer->filepos < 0)
         return M_PROPERTY_UNAVAILABLE;
-    demux_pause(demuxer);
-    int r;
-    if (action == M_PROPERTY_SET) {
-        stream_seek(demuxer->stream, *(int64_t *) arg);
-        r = M_PROPERTY_OK;
-    } else {
-        r = m_property_int64_ro(action, arg, stream_tell(demuxer->stream));
-    }
-    demux_unpause(demuxer);
-    return r;
+    return m_property_int64_ro(action, arg, demuxer->filepos);
 }
 
 /// Stream end offset (RO)
@@ -1087,11 +1086,12 @@ static int mp_property_angle(void *ctx, struct m_property *prop,
         if (angle < 0 || angle > angles)
             return M_PROPERTY_ERROR;
 
-        demux_pause(demuxer);
         demux_flush(demuxer);
         ris = demux_stream_control(demuxer, STREAM_CTRL_SET_ANGLE, &angle);
-        demux_control(demuxer, DEMUXER_CTRL_RESYNC, NULL);
-        demux_unpause(demuxer);
+        if (ris == STREAM_OK) {
+            demux_control(demuxer, DEMUXER_CTRL_RESYNC, NULL);
+            demux_flush(demuxer);
+        }
 
         reset_audio_state(mpctx);
         reset_video_state(mpctx);
@@ -2719,7 +2719,7 @@ static int mp_property_osd_w(void *ctx, struct m_property *prop,
                              int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd, OSDTYPE_OSD);
+    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd);
     return m_property_int_ro(action, arg, vo_res.w);
 }
 
@@ -2727,7 +2727,7 @@ static int mp_property_osd_h(void *ctx, struct m_property *prop,
                              int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd, OSDTYPE_OSD);
+    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd);
     return m_property_int_ro(action, arg, vo_res.h);
 }
 
@@ -2735,7 +2735,7 @@ static int mp_property_osd_par(void *ctx, struct m_property *prop,
                                int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd, OSDTYPE_OSD);
+    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd);
     return m_property_double_ro(action, arg, vo_res.display_par);
 }
 

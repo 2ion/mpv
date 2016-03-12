@@ -44,7 +44,7 @@ struct sd_ass_priv {
     bool is_converted;
     struct lavc_conv *converter;
     bool on_top;
-    struct sub_bitmap *parts;
+    struct sub_bitmaps part_cache;
     char last_text[500];
     struct mp_image_params video_params;
     struct mp_image_params last_params;
@@ -452,14 +452,21 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
     if (ctx->duration_unknown && pts != MP_NOPTS_VALUE) {
         mp_ass_flush_old_events(track, ts);
         ctx->num_seen_packets = 0;
+        sd->preload_ok = false;
     }
+
     if (no_ass)
         fill_plaintext(sd, pts);
-    mp_ass_render_frame(renderer, track, ts, &ctx->parts, res);
-    talloc_steal(ctx, ctx->parts);
+
+    ctx->part_cache.change_id = 0;
+    ctx->part_cache.num_parts = 0;
+    mp_ass_render_frame(renderer, track, ts, &ctx->part_cache);
+    talloc_steal(ctx, ctx->part_cache.parts);
 
     if (!converted)
-        mangle_colors(sd, res);
+        mangle_colors(sd, &ctx->part_cache);
+
+    *res = ctx->part_cache;
 }
 
 struct buf {
@@ -612,6 +619,7 @@ static void reset(struct sd *sd)
     if (sd->opts->sub_clear_on_seek || ctx->duration_unknown) {
         ass_flush_events(ctx->ass_track);
         ctx->num_seen_packets = 0;
+        sd->preload_ok = false;
     }
     if (ctx->converter)
         lavc_conv_reset(ctx->converter);

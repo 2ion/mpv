@@ -71,8 +71,7 @@ void uninit_sub(struct MPContext *mpctx, struct track *track)
         reset_subtitles(mpctx, track);
         sub_select(track->d_sub, false);
         int order = get_order(mpctx, track);
-        if (order >= 0 && order <= 1)
-            osd_set_sub(mpctx->osd, OSDTYPE_SUB + order, NULL);
+        osd_set_sub(mpctx->osd, order, NULL);
     }
 }
 
@@ -99,18 +98,15 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
 
     video_pts -= opts->sub_delay;
 
-    if (!track->preloaded && track->demuxer->fully_read && !opts->sub_clear_on_seek)
-    {
+    if (track->demuxer->fully_read && sub_can_preload(dec_sub)) {
         // Assume fully_read implies no interleaved audio/video streams.
         // (Reading packets will change the demuxer position.)
         demux_seek(track->demuxer, 0, 0);
-        track->preloaded = sub_read_all_packets(track->d_sub);
+        sub_preload(dec_sub);
     }
 
-    if (!track->preloaded) {
-        if (!sub_read_packets(dec_sub, video_pts))
-            return false;
-    }
+    if (!sub_read_packets(dec_sub, video_pts))
+        return false;
 
     // Handle displaying subtitles on terminal; never done for secondary subs
     if (mpctx->current_track[0][STREAM_SUB] == track && !mpctx->video_out)
@@ -185,8 +181,7 @@ void reinit_sub(struct MPContext *mpctx, struct track *track)
 
     sub_select(track->d_sub, true);
     int order = get_order(mpctx, track);
-    if (order >= 0 && order <= 1)
-        osd_set_sub(mpctx->osd, OSDTYPE_SUB + order, track->d_sub);
+    osd_set_sub(mpctx->osd, order, track->d_sub);
     sub_control(track->d_sub, SD_CTRL_SET_TOP, &(bool){!!order});
 }
 

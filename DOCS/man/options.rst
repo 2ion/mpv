@@ -580,6 +580,8 @@ Video
     :vaapi:     requires ``--vo=opengl`` or ``--vo=vaapi`` (Linux only)
     :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
     :videotoolbox: requires ``--vo=opengl`` (OS X 10.8 and up only)
+    :dxva2: requires ``--vo=opengl:backend=angle`` or
+        ``--vo=opengl:backend=dxinterop`` (Windows only)
     :dxva2-copy: copies video back to system RAM (Windows only)
     :rpi:       requires ``--vo=rpi`` (Raspberry Pi only - default if available)
 
@@ -596,9 +598,14 @@ Video
     forcing it with ``--vo=opengl:backend=x11``, but the vaapi/GLX interop is
     said to be slower than ``vaapi-copy``.
 
-    The ``vaapi-copy`` mode allows you to use vaapi with any VO. Because
-    this copies the decoded video back to system RAM, it's likely less efficient
-    than the ``vaapi`` mode.
+    Most video filters will not work with hardware decoding as they are
+    primarily implemented on the CPU. Some exceptions are ``vdpaupp``,
+    ``vdpaurb`` and ``vavpp``. See `VIDEO FILTERS`_ for more details.
+
+    The ``vaapi-copy`` and ``dxva2-copy`` modes allow you to use hardware
+    decoding with any VO, backend or filter. Because these copy the decoded
+    video back to system RAM, they're likely less efficient than the ``vaapi``
+    or ``dxva2`` modes respectivley.
 
     .. note::
 
@@ -3607,5 +3614,3 @@ Miscellaneous
           Conways' Life Game.
 
     See the FFmpeg libavfilter documentation for details on the filter.
-
-
