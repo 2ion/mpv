@@ -106,6 +106,21 @@ const m_option_t *m_option_list_find(const m_option_t *list, const char *name)
     return m_option_list_findb(list, bstr0(name));
 }
 
+int m_option_set_node_or_string(struct mp_log *log, const m_option_t *opt,
+                                const char *name, void *dst, struct mpv_node *src)
+{
+    if (src->format == MPV_FORMAT_STRING) {
+        // The af and vf option unfortunately require this, because the
+        // option name includes the "action".
+        bstr optname = bstr0(name), a, b;
+        if (bstr_split_tok(optname, "/", &a, &b))
+            optname = b;
+        return m_option_parse(log, opt, optname, bstr0(src->u.string), dst);
+    } else {
+        return m_option_set_node(opt, dst, src);
+    }
+}
+
 // Default function that just does a memcpy
 
 static void copy_opt(const m_option_t *opt, void *dst, const void *src)
@@ -1654,7 +1669,7 @@ static int parse_msglevels(struct mp_log *log, const m_option_t *opt,
                            struct bstr name, struct bstr param, void *dst)
 {
     if (bstr_equals0(param, "help")) {
-        mp_info(log, "Syntax: --msglevel=module1=level:module2=level:...\n"
+        mp_info(log, "Syntax:\n\n   --msglevel=module1=level,module2=level,...\n\n"
                      "'module' is output prefix as shown with -v, or a prefix\n"
                      "of it. level is one of:\n\n"
                      "  fatal error warn info status v debug trace\n\n"
@@ -2287,10 +2302,18 @@ static int parse_chmap(struct mp_log *log, const m_option_t *opt,
     return 1;
 }
 
+static char *print_chmap(const m_option_t *opt, const void *val)
+{
+    const struct mp_chmap *chmap = val;
+    return talloc_strdup(NULL, mp_chmap_to_str(chmap));
+}
+
+
 const m_option_type_t m_option_type_chmap = {
     .name  = "Audio channels or channel map",
     .size  = sizeof(struct mp_chmap),
     .parse = parse_chmap,
+    .print = print_chmap,
     .copy  = copy_opt,
 };
 

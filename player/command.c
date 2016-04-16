@@ -2324,12 +2324,9 @@ static int panscan_property_helper(void *ctx, struct m_property *prop,
                                    int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    if (!mpctx->video_out
-        || vo_control(mpctx->video_out, VOCTRL_GET_PANSCAN, NULL) != VO_TRUE)
-        return M_PROPERTY_UNAVAILABLE;
 
     int r = mp_property_generic_option(mpctx, prop, action, arg);
-    if (action == M_PROPERTY_SET)
+    if (mpctx->video_out && action == M_PROPERTY_SET)
         vo_control(mpctx->video_out, VOCTRL_SET_PANSCAN, NULL);
     return r;
 }
@@ -3907,6 +3904,23 @@ int mp_property_do(const char *name, int action, void *val,
     int r = m_property_do(ctx->log, mp_properties, name, action, val, ctx);
     if (r == M_PROPERTY_OK && is_property_set(action, val))
         mp_notify_property(ctx, (char *)name);
+    if (mp_msg_test(ctx->log, MSGL_V) && is_property_set(action, val)) {
+        struct m_option ot = {0};
+        void *data = val;
+        switch (action) {
+        case M_PROPERTY_SET_NODE:
+            ot.type = &m_option_type_node;
+            break;
+        case M_PROPERTY_SET_STRING:
+            ot.type = &m_option_type_string;
+            data = &val;
+            break;
+        }
+        char *t = ot.type ? m_option_print(&ot, data) : NULL;
+        MP_VERBOSE(ctx, "Set property: %s%s%s -> %d\n",
+                   name, t ? "=" : "", t ? t : "", r);
+        talloc_free(t);
+    }
     return r;
 }
 
